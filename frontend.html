@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化助手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════
+   CSS VARIABLES — THEME SYSTEM
+═══════════════════════════════════════════ */
+:root {
+  --transition: .35s cubic-bezier(.4,0,.2,1);
+}
+
+[data-theme="dark"] {
+  --bg:           #0a0e17;
+  --bg2:          #0f1520;
+  --bg3:          #151d2e;
+  --card:         #111827;
+  --card2:        #1a2235;
+  --border:       rgba(255,255,255,.07);
+  --border2:      rgba(255,255,255,.12);
+  --text:         #e8edf5;
+  --text2:        #8899b4;
+  --text3:        #4d6080;
+  --accent:       #00d4a4;
+  --accent2:      #0099ff;
+  --accentRed:    #ff4d6d;
+  --accentAmber:  #fbbf24;
+  --glow:         rgba(0,212,164,.15);
+  --glowBlue:     rgba(0,153,255,.12);
+  --shadow:       0 8px 32px rgba(0,0,0,.5);
+  --shadow2:      0 2px 8px rgba(0,0,0,.3);
+  --gradient:     linear-gradient(135deg, #0f1520 0%, #0a0e17 100%);
+  --chartGrid:    rgba(255,255,255,.04);
+  --chartBg:      rgba(0,212,164,.08);
+  --chartBg2:     rgba(255,77,109,.08);
+}
+
+[data-theme="light"] {
+  --bg:           #f0f4f8;
+  --bg2:          #e8edf5;
+  --bg3:          #dde5f0;
+  --card:         #ffffff;
+  --card2:        #f8faff;
+  --border:       rgba(0,0,0,.07);
+  --border2:      rgba(0,0,0,.12);
+  --text:         #111827;
+  --text2:        #4b5563;
+  --text3:        #9ca3af;
+  --accent:       #059669;
+  --accent2:      #2563eb;
+  --accentRed:    #dc2626;
+  --accentAmber:  #d97706;
+  --glow:         rgba(5,150,105,.1);
+  --glowBlue:     rgba(37,99,235,.08);
+  --shadow:       0 8px 32px rgba(0,0,0,.1);
+  --shadow2:      0 2px 8px rgba(0,0,0,.06);
+  --gradient:     linear-gradient(135deg, #f0f4f8 0%, #e8edf5 100%);
+  --chartGrid:    rgba(0,0,0,.04);
+  --chartBg:      rgba(5,150,105,.08);
+  --chartBg2:     rgba(220,38,38,.08);
+}
+
+/* ═══════════════════════════════════════════
+   RESET & BASE
+═══════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
+  overflow-x: hidden;
+}
+
+/* ═══════════════════════════════════════════
+   BACKGROUND MESH
+═══════════════════════════════════════════ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 800px 600px at 10% 20%, var(--glow), transparent),
+    radial-gradient(ellipse 600px 400px at 90% 80%, var(--glowBlue), transparent);
+  pointer-events: none;
+  z-index: 0;
+  transition: var(--transition);
+}
+
+/* ═══════════════════════════════════════════
+   TOPBAR
+═══════════════════════════════════════════ */
+.topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 56px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  z-index: 100;
+  backdrop-filter: blur(20px);
+  gap: 16px;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.topbar-logo {
+  font-family: 'Syne', sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-logo span {
+  color: var(--text);
+  font-weight: 400;
+  font-size: 14px;
+  opacity: .5;
+}
+
+.topbar-nav {
+  display: flex;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+.nav-btn {
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.nav-btn:hover { background: var(--border); color: var(--text); }
+.nav-btn.active { background: var(--glow); color: var(--accent); }
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.refresh-btn {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .2s;
+  display: flex; align-items: center; gap: 6px;
+}
+.refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+.refresh-btn.spinning .icon { animation: spin .8s linear infinite; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Theme Toggle */
+.theme-toggle {
+  width: 44px; height: 24px;
+  background: var(--border2);
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--transition);
+}
+
+.theme-toggle::after {
+  content: '';
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: transform var(--transition);
+}
+
+[data-theme="light"] .theme-toggle::after {
+  transform: translateX(20px);
+}
+
+.theme-icon {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  font-size: 10px;
+  pointer-events: none;
+}
+.theme-icon.moon { left: 5px; }
+.theme-icon.sun  { right: 5px; }
+
+/* Status dot */
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s ease infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent); }
+  50% { opacity: .7; box-shadow: 0 0 0 6px transparent; }
+}
+
+/* ═══════════════════════════════════════════
+   MAIN LAYOUT
+═══════════════════════════════════════════ */
+.main {
+  padding-top: 72px;
+  padding-bottom: 32px;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding-left: 24px;
+  padding-right: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ═══════════════════════════════════════════
+   SECTION PAGES
+═══════════════════════════════════════════ */
+.section { display: none; }
+.section.active { display: block; }
+
+/* ═══════════════════════════════════════════
+   KPI ROW
+═══════════════════════════════════════════ */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.kpi-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px 22px;
+  transition: all var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform .3s;
+}
+
+.kpi-card:hover::before { transform: scaleX(1); }
+.kpi-card:hover { border-color: var(--border2); transform: translateY(-2px); box-shadow: var(--shadow); }
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text3);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.kpi-value {
+  font-family: 'DM Mono', monospace;
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.kpi-value.pos { color: var(--accent); }
+.kpi-value.neg { color: var(--accentRed); }
+
+.kpi-sub {
+  font-size: 12px;
+  color: var(--text3);
+}
+
+/* ═══════════════════════════════════════════
+   CHART CARDS
+═══════════════════════════════════════════ */
+.chart-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.chart-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 24px;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.chart-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.chart-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.legend-dot {
+  width: 8px; height: 8px;
+  border-radius: 2px;
+}
+
+.chart-wrap { position: relative; height: 240px; }
+.chart-wrap canvas { width: 100% !important; }
+
+/* Direction pie chart */
+.pie-wrap { position: relative; height: 180px; display: flex; align-items: center; justify-content: center; }
+
+/* ═══════════════════════════════════════════
+   SIGNAL CARDS ROW
+═══════════════════════════════════════════ */
+.signal-section {
+  margin-bottom: 20px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.section-badge {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--glow);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.signal-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  transition: all .2s;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.signal-card::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--sig-color, var(--border2));
+  border-radius: 3px 0 0 3px;
+}
+
+.signal-card[data-dir="buy"]   { --sig-color: var(--accent); }
+.signal-card[data-dir="sell"]  { --sig-color: var(--accentRed); }
+.signal-card[data-dir="hold"]  { --sig-color: var(--accentAmber); }
+
+.signal-card:hover { transform: translateY(-2px); box-shadow: var(--shadow2); border-color: var(--border2); }
+
+.signal-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.signal-symbol {
+  font-family: 'DM Mono', monospace;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.signal-date { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+.dir-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  padding: 3px 9px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.dir-badge.buy  { background: rgba(0,212,164,.12); color: var(--accent); }
+.dir-badge.sell { background: rgba(255,77,109,.12); color: var(--accentRed); }
+.dir-badge.hold { background: rgba(251,191,36,.12); color: var(--accentAmber); }
+
+.signal-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-label { font-size: 10px; color: var(--text3); }
+.metric-value {
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  color: var(--text2);
+  font-weight: 500;
+}
+
+.confidence-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.confidence-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--sig-color);
+  transition: width .6s cubic-bezier(.4,0,.2,1);
+}
+
+/* ═══════════════════════════════════════════
+   BOTTOM TABLE CARD
+═══════════════════════════════════════════ */
+.table-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 24px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 0 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  transition: color var(--transition);
+}
+
+.data-table tr:last-child td { border-bottom: none; }
+
+.data-table tr:hover td {
+  background: var(--card2);
+  color: var(--text);
+}
+
+.data-table .mono { font-family: 'DM Mono', monospace; font-size: 12px; }
+.data-table .pos  { color: var(--accent); }
+.data-table .neg  { color: var(--accentRed); }
+
+/* ═══════════════════════════════════════════
+   CONFIG SECTION
+═══════════════════════════════════════════ */
+.config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.config-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 22px 24px;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.config-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.config-row:last-child { border-bottom: none; }
+
+.config-key {
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.config-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.config-val.accent { color: var(--accent); }
+
+.style-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+.style-badge.balanced    { background: var(--glowBlue); color: var(--accent2); }
+.style-badge.aggressive  { background: rgba(255,77,109,.12); color: var(--accentRed); }
+.style-badge.conservative{ background: var(--glow); color: var(--accent); }
+
+/* ═══════════════════════════════════════════
+   FLOATING CHAT BUBBLE
+═══════════════════════════════════════════ */
+.chat-fab {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 54px;
+  height: 54px;
+  border-radius: 27px;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  box-shadow: 0 4px 24px var(--glow), 0 2px 8px rgba(0,0,0,.3);
+  z-index: 200;
+  transition: all .25s;
+}
+
+.chat-fab:hover {
+  transform: scale(1.08);
+  box-shadow: 0 6px 32px var(--glow), 0 2px 12px rgba(0,0,0,.4);
+}
+
+.chat-fab .fab-icon { transition: transform .3s; }
+.chat-panel.open ~ .chat-fab .fab-icon,
+.chat-fab.active .fab-icon { transform: rotate(45deg); }
+
+/* Chat Panel */
+.chat-panel {
+  position: fixed;
+  bottom: 96px;
+  right: 28px;
+  width: 380px;
+  height: 560px;
+  background: var(--card);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  z-index: 199;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: all .35s cubic-bezier(.4,0,.2,1);
+  transform-origin: bottom right;
+  transform: scale(0) translateY(20px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-panel.open {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  pointer-events: all;
+}
+
+.chat-panel-header {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card2);
+}
+
+.chat-panel-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  flex: 1;
+}
+
+.chat-panel-sub {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.chat-close {
+  background: none;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 2px;
+  transition: color .2s;
+}
+.chat-close:hover { color: var(--text); }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border2) transparent;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 10px 13px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  animation: bubbleIn .25s cubic-bezier(.4,0,.2,1);
+}
+
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.chat-bubble.user {
+  background: var(--accent);
+  color: #fff;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-bubble.ai {
+  background: var(--card2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+
+.chat-bubble.typing {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+
+.typing-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  height: 16px;
+}
+
+.typing-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text3);
+  animation: typingBounce 1.2s ease infinite;
+}
+
+.typing-dot:nth-child(2) { animation-delay: .2s; }
+.typing-dot:nth-child(3) { animation-delay: .4s; }
+
+@keyframes typingBounce {
+  0%,60%,100% { transform: translateY(0); }
+  30% { transform: translateY(-6px); }
+}
+
+.chat-quick {
+  padding: 8px 12px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  background: var(--card2);
+}
+
+.quick-chip {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .2s;
+  white-space: nowrap;
+}
+
+.quick-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--glow); }
+
+.chat-input-row {
+  display: flex;
+  padding: 12px 14px;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-input {
+  flex: 1;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: border-color .2s;
+}
+
+.chat-input::placeholder { color: var(--text3); }
+.chat-input:focus { border-color: var(--accent); }
+
+.chat-send {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .2s;
+  flex-shrink: 0;
+}
+.chat-send:hover { transform: scale(1.05); }
+.chat-send svg { width: 16px; height: 16px; fill: #fff; }
+
+/* ═══════════════════════════════════════════
+   LOADING SKELETON
+═══════════════════════════════════════════ */
+.skeleton {
+  background: linear-gradient(90deg, var(--card) 25%, var(--card2) 50%, var(--card) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease infinite;
+  border-radius: 6px;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* ═══════════════════════════════════════════
+   TOAST
+═══════════════════════════════════════════ */
+.toast {
+  position: fixed;
+  top: 70px;
+  right: 24px;
+  background: var(--card2);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: var(--shadow);
+  z-index: 300;
+  transform: translateX(120%);
+  transition: transform .35s cubic-bezier(.4,0,.2,1);
+  max-width: 320px;
+}
+
+.toast.show { transform: translateX(0); }
+.toast.success { border-left: 3px solid var(--accent); }
+.toast.error   { border-left: 3px solid var(--accentRed); }
+
+/* ═══════════════════════════════════════════
+   EMPTY STATE
+═══════════════════════════════════════════ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+  color: var(--text3);
+  gap: 12px;
+}
+
+.empty-icon { font-size: 40px; opacity: .4; }
+.empty-text { font-size: 14px; }
+
+/* ═══════════════════════════════════════════
+   RESPONSIVE
+═══════════════════════════════════════════ */
+@media (max-width: 1100px) {
+  .kpi-row { grid-template-columns: repeat(3, 1fr); }
+  .chart-row { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .main { padding: 72px 12px 24px; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .chat-panel { width: calc(100vw - 32px); right: 16px; }
+  .topbar-nav { display: none; }
+  .config-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════ TOPBAR ═══════════════════ -->
+<nav class="topbar">
+  <div class="topbar-logo">
+    📈 量化助手
+    <span>Plan B</span>
+  </div>
+  <div class="topbar-nav">
+    <button class="nav-btn active" onclick="showSection('dashboard')">仪表盘</button>
+    <button class="nav-btn" onclick="showSection('signals')">信号记录</button>
+    <button class="nav-btn" onclick="showSection('config')">策略配置</button>
+  </div>
+  <div class="topbar-right">
+    <div class="status-dot" id="statusDot" title="调度器状态"></div>
+    <button class="refresh-btn" onclick="refreshAll(this)">
+      <span class="icon">↻</span> 刷新
+    </button>
+    <button class="theme-toggle" onclick="toggleTheme()" title="切换深浅色">
+      <span class="theme-icon moon">🌙</span>
+      <span class="theme-icon sun">☀️</span>
+    </button>
+  </div>
+</nav>
+
+<!-- ═══════════════════ MAIN ═══════════════════ -->
+<main class="main">
+
+  <!-- ── 仪表盘 ────────────────────────── -->
+  <div class="section active" id="sec-dashboard">
+
+    <!-- KPI 行 -->
+    <div class="kpi-row" id="kpiRow">
+      <div class="kpi-card"><div class="kpi-label">累计净值</div><div class="kpi-value pos" id="kpiNav">--</div><div class="kpi-sub">相对初始本金</div></div>
+      <div class="kpi-card"><div class="kpi-label">近30日胜率</div><div class="kpi-value" id="kpiWin">--</div><div class="kpi-sub">信号方向准确率</div></div>
+      <div class="kpi-card"><div class="kpi-label">平均单次收益</div><div class="kpi-value" id="kpiAvg">--</div><div class="kpi-sub">含亏损信号</div></div>
+      <div class="kpi-card"><div class="kpi-label">最大回撤</div><div class="kpi-value neg" id="kpiDD">--</div><div class="kpi-sub">历史最大</div></div>
+      <div class="kpi-card"><div class="kpi-label">市场情绪</div><div class="kpi-value" id="kpiSent">--</div><div class="kpi-sub" id="kpiSentLabel">--</div></div>
+    </div>
+
+    <!-- 图表行 -->
+    <div class="chart-row">
+      <!-- 净值曲线 -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">净值 & 回撤曲线</div>
+            <div class="chart-sub">近60日</div>
+          </div>
+          <div class="chart-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div>净值</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--accentRed)"></div>回撤</div>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+      </div>
+      <!-- 信号方向分布 -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">信号分布</div>
+            <div class="chart-sub">近30日买卖占比</div>
+          </div>
+        </div>
+        <div class="pie-wrap"><canvas id="dirChart"></canvas></div>
+        <div id="dirLegend" style="margin-top:12px;display:flex;gap:16px;justify-content:center"></div>
+      </div>
+    </div>
+
+    <!-- 市场情绪图表行（北向资金图表已移除，数据源不可用） -->
+    <div class="chart-row">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">市场情绪指数</div>
+            <div class="chart-sub">综合评分 0-100</div>
+          </div>
+        </div>
+        <div class="pie-wrap"><canvas id="sentimentGauge"></canvas></div>
+        <div id="sentimentDetail" style="margin-top:12px;font-size:12px;color:var(--text2);text-align:center"></div>
+      </div>
+    </div>
+
+    <!-- 最新信号卡片 -->
+    <div class="signal-section">
+      <div class="section-header">
+        <div class="section-title">最新信号</div>
+        <div class="section-badge" id="sigBadge">今日</div>
+      </div>
+      <div class="signal-grid" id="signalGrid">
+        <div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">暂无信号数据，点击刷新</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 信号记录 ─────────────────────── -->
+  <div class="section" id="sec-signals">
+    <div class="table-card">
+      <div class="chart-header" style="margin-bottom:16px">
+        <div class="chart-title">信号历史记录</div>
+        <div class="chart-sub" id="tableCount">--</div>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>日期</th><th>标的</th><th>方向</th><th>置信度</th>
+            <th>建议仓位</th><th>止损</th><th>综合评分</th><th>实际收益</th><th>结果</th>
+          </tr>
+        </thead>
+        <tbody id="signalTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── 策略配置 ─────────────────────── -->
+  <div class="section" id="sec-config">
+    <div class="config-grid" id="configGrid">
+      <div class="config-card"><div class="empty-state"><div class="empty-icon">⚙️</div><div class="empty-text">加载配置中...</div></div></div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ═══════════════════ FLOATING CHAT ═══════════════════ -->
+<div class="chat-panel" id="chatPanel">
+  <div class="chat-panel-header">
+    <div>
+      <div class="chat-panel-title">💬 策略助手</div>
+      <div class="chat-panel-sub">DeepSeek 驱动 · 对话修改配置</div>
+    </div>
+    <button class="chat-close" onclick="toggleChat()">×</button>
+  </div>
+  <div class="chat-messages" id="chatMessages">
+    <div class="chat-bubble ai">你好！我可以帮你查询信号、修改策略配置。试试说「切换成保守模式」或「最近胜率多少」。</div>
+  </div>
+  <div class="chat-quick">
+    <button class="quick-chip" onclick="sendQuick(this)">切换保守模式</button>
+    <button class="quick-chip" onclick="sendQuick(this)">切换激进模式</button>
+    <button class="quick-chip" onclick="sendQuick(this)">止损改成3%</button>
+    <button class="quick-chip" onclick="sendQuick(this)">近30天胜率</button>
+    <button class="quick-chip" onclick="sendQuick(this)">今日信号</button>
+  </div>
+  <div class="chat-input-row">
+    <input class="chat-input" id="chatInput" placeholder="输入指令..." onkeydown="if(event.key==='Enter')sendMessage()">
+    <button class="chat-send" onclick="sendMessage()">
+      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+    </button>
+  </div>
+</div>
+
+<button class="chat-fab" id="chatFab" onclick="toggleChat()">
+  <span class="fab-icon">💬</span>
+</button>
+
+<div class="toast" id="toast"></div>
+
+<!-- ═══════════════════ SCRIPTS ═══════════════════ -->
+<script>
+// ── 配置 ──────────────────────────────────────────
+// 自动检测后端地址：通过服务器访问时用同源，直接打开文件时用 localhost
+const API = window.location.protocol.startsWith('file')
+  ? 'http://localhost:7860'
+  : window.location.origin;
+
+// ── 全局状态 ──────────────────────────────────────
+let equityChart    = null;
+let dirChart       = null;
+let sentimentGauge  = null;
+let chatHistory    = [];
+let chatOpen       = false;
+let allSignals     = [];
+let perfData       = {};
+let configData     = {};
+let sentimentData  = {};
+
+// ══════════════════════════════════════════════════
+// THEME
+// ══════════════════════════════════════════════════
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  html.dataset.theme = next;
+  localStorage.setItem('theme', next);
+  // 重绘图表
+  if (equityChart)   drawEquityChart(window._equityData || []);
+  if (dirChart)      drawDirChart(window._dirData || {});
+  if (sentimentGauge) drawSentimentGauge(sentimentData);
+}
+
+(function initTheme() {
+  const saved = localStorage.getItem('theme');
+  if (saved) document.documentElement.dataset.theme = saved;
+})();
+
+// ══════════════════════════════════════════════════
+// NAV
+// ══════════════════════════════════════════════════
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('sec-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ══════════════════════════════════════════════════
+// TOAST
+// ══════════════════════════════════════════════════
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast ${type} show`;
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ══════════════════════════════════════════════════
+// API CALLS (直接调用 FastAPI 路由，可靠且不受 fn_index 变动影响)
+// ══════════════════════════════════════════════════
+async function apiGet(path) {
+  try {
+    const res = await fetch(`${API}${path}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch(e) {
+    console.warn(`API ${path} 调用失败，使用 mock 数据`, e);
+    return null;
+  }
+}
+
+async function apiPost(path, body) {
+  try {
+    const res = await fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch(e) {
+    console.warn(`API ${path} 调用失败`, e);
+    return null;
+  }
+}
+
+// ── Mock 数据（后端未连通时展示） ─────────────────
+// ── Mock 数据（确定性：基于日期种子，同一天刷新结果相同）──
+function seededRandom(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+function mockEquity() {
+  const data = [];
+  let v = 1.0;
+  const today = new Date();
+  // 用今天的日期做种子，同一天数据不变
+  const daySeed = today.getFullYear() * 10000 + (today.getMonth()+1) * 100 + today.getDate();
+  const rand = seededRandom(daySeed);
+  for (let i = 59; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    v *= (1 + (rand() - 0.48) * 0.012);
+    data.push({ date: d.toISOString().slice(0,10), equity: +v.toFixed(4) });
+  }
+  return data;
+}
+
+function mockSignals() {
+  const symbols = ['000300','510050','600519','000858'];
+  const dirs    = ['buy','sell','hold'];
+  const today   = new Date().toISOString().slice(0,10);
+  const daySeed = new Date().getFullYear() * 10000 + (new Date().getMonth()+1) * 100 + new Date().getDate();
+  const rand = seededRandom(daySeed);
+  return symbols.map((s, i) => ({
+    symbol: s,
+    signal_date: today,
+    direction: dirs[Math.floor(rand() * 3)],
+    confidence: Math.floor(rand() * 40 + 50),
+    suggested_position: +(rand() * 0.5 + 0.1).toFixed(2),
+    stop_loss: +(rand() * 0.04 + 0.02).toFixed(3),
+    composite_score: +(rand() * 60 + 30).toFixed(1),
+    actual_return: rand() > 0.5 ? +(rand() * 0.05 - 0.01).toFixed(4) : null,
+    is_correct: rand() > 0.4 ? 1 : 0,
+  }));
+}
+
+function mockPerf() {
+  return { total: 42, win_rate: 0.62, avg_return: 0.018, worst: -0.04, best: 0.07 };
+}
+
+function mockConfig() {
+  return {
+    strategy: { style:'balanced', market:'A股', symbols:['000300','510050'] },
+    risk: { max_position:0.6, stop_loss:0.05, take_profit:0.12 },
+    signals: { rsi_overbought:70, rsi_oversold:30, macd_weight:0.4, rsi_weight:0.3, volume_weight:0.3 },
+  };
+}
+
+function mockSentiment() {
+  const daySeed = new Date().getFullYear() * 10000 + (new Date().getMonth()+1) * 100 + new Date().getDate();
+  const rand = seededRandom(daySeed);
+  const v = 30 + rand() * 40;
+  const labels = ['extreme_fear','fear','neutral','greed','extreme_greed'];
+  const idx = v < 25 ? 0 : v < 45 ? 1 : v < 55 ? 2 : v < 75 ? 3 : 4;
+  return {
+    value: +v.toFixed(1),
+    label: labels[idx],
+    northbound_score: +(40 + rand() * 20).toFixed(1),
+    fund_flow_score: +(40 + rand() * 20).toFixed(1),
+    breadth_score: +(40 + rand() * 20).toFixed(1),
+    momentum_score: +(40 + rand() * 20).toFixed(1),
+  };
+}
+
+// ══════════════════════════════════════════════════
+// DATA LOADING
+// ══════════════════════════════════════════════════
+async function loadAll() {
+  // 逐个请求，单个失败不影响其他
+  const [signals, perf, cfg, equity, sent] = await Promise.allSettled([
+    apiGet('/api/signals'), apiGet('/api/performance'), apiGet('/api/config'),
+    apiGet('/api/equity'), apiGet('/api/sentiment'),
+  ]).then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
+
+  // 只有 API 完全不可达（null）才用 mock；空数组/空对象是合法响应
+  allSignals   = (signals !== null && Array.isArray(signals)) ? signals : (signals === null ? mockSignals() : []);
+  perfData     = (perf !== null && typeof perf === 'object')   ? perf   : (perf === null ? mockPerf() : {});
+  configData   = (cfg !== null && typeof cfg === 'object')     ? cfg    : (cfg === null ? mockConfig() : {});
+  const equityData = (equity !== null && Array.isArray(equity)) ? equity : (equity === null ? mockEquity() : []);
+  sentimentData   = (sent !== null && typeof sent === 'object' && sent.value !== undefined) ? sent : (sent === null ? mockSentiment() : {});
+
+  renderKPIs(perfData, equityData);
+  drawEquityChart(equityData);
+  drawDirChart(allSignals);
+  drawSentimentGauge(sentimentData);
+  renderSignalCards(allSignals);
+  renderSignalTable(allSignals);
+  renderConfig(configData);
+}
+
+// ══════════════════════════════════════════════════
+// KPIs
+// ══════════════════════════════════════════════════
+function renderKPIs(perf, equity) {
+  const nav  = equity.length ? equity[equity.length-1].equity : 1;
+  const dd   = calcMaxDrawdown(equity);
+  const wr   = perf.win_rate || 0;
+  const avg  = perf.avg_return || 0;
+
+  const setKPI = (id, val, cls) => {
+    const el = document.getElementById(id);
+    el.textContent = val;
+    el.className   = 'kpi-value' + (cls ? ' '+cls : '');
+  };
+
+  setKPI('kpiNav', nav.toFixed(4), nav >= 1 ? 'pos' : 'neg');
+  setKPI('kpiWin', (wr*100).toFixed(1)+'%', wr >= .5 ? 'pos' : 'neg');
+  setKPI('kpiAvg', (avg*100 >= 0?'+':'')+(avg*100).toFixed(2)+'%', avg>=0?'pos':'neg');
+  setKPI('kpiDD',  (dd*100).toFixed(2)+'%', 'neg');
+
+  // 市场情绪
+  const sentEl = document.getElementById('kpiSent');
+  const labelEl = document.getElementById('kpiSentLabel');
+  const sent = sentimentData;
+  if (sent && sent.value) {
+    const labelMap = {
+      extreme_fear: '极度恐惧', fear: '恐惧', neutral: '中性',
+      greed: '贪婪', extreme_greed: '极度贪婪',
+    };
+    sentEl.textContent = sent.value.toFixed(1);
+    const cls = sent.value <= 45 ? 'neg' : sent.value >= 55 ? 'pos' : '';
+    sentEl.className = 'kpi-value' + (cls ? ' ' + cls : '');
+    labelEl.textContent = labelMap[sent.label] || sent.label;
+  } else {
+    sentEl.textContent = '--';
+    sentEl.className = 'kpi-value';
+    labelEl.textContent = '--';
+  }
+}
+
+function calcMaxDrawdown(data) {
+  if (!data.length) return 0;
+  let peak = data[0].equity, maxDD = 0;
+  for (const d of data) {
+    if (d.equity > peak) peak = d.equity;
+    const dd = (peak - d.equity) / peak;
+    if (dd > maxDD) maxDD = dd;
+  }
+  return maxDD;
+}
+
+// ══════════════════════════════════════════════════
+// EQUITY CHART
+// ══════════════════════════════════════════════════
+function drawEquityChart(data) {
+  window._equityData = data;
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  const labels = data.map(d => d.date.slice(5));
+  const values = data.map(d => d.equity);
+
+  // 计算回撤
+  let peak = values[0] || 1;
+  const dd = values.map(v => {
+    if (v > peak) peak = v;
+    return -((peak - v) / peak * 100).toFixed(3);
+  });
+
+  const gridColor = isDark ? 'rgba(255,255,255,.04)' : 'rgba(0,0,0,.04)';
+  const textColor = isDark ? '#4d6080' : '#9ca3af';
+  const accentColor  = isDark ? '#00d4a4' : '#059669';
+  const accentRed    = isDark ? '#ff4d6d' : '#dc2626';
+
+  if (equityChart) equityChart.destroy();
+
+  const ctx = document.getElementById('equityChart').getContext('2d');
+  const gradG = ctx.createLinearGradient(0,0,0,240);
+  gradG.addColorStop(0, isDark ? 'rgba(0,212,164,.2)' : 'rgba(5,150,105,.15)');
+  gradG.addColorStop(1, 'transparent');
+
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '净值',
+          data: values,
+          borderColor: accentColor,
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          backgroundColor: gradG,
+          tension: .4,
+          yAxisID: 'y',
+        },
+        {
+          label: '回撤%',
+          data: dd,
+          borderColor: accentRed,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+          tension: .4,
+          yAxisID: 'y2',
+          borderDash: [4,3],
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: isDark ? '#1a2235' : '#fff',
+          borderColor: isDark ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.08)',
+          borderWidth: 1,
+          titleColor: textColor,
+          bodyColor: isDark ? '#e8edf5' : '#111827',
+          padding: 10,
+          callbacks: {
+            label: ctx => ctx.datasetIndex === 0
+              ? ` 净值 ${ctx.parsed.y.toFixed(4)}`
+              : ` 回撤 ${ctx.parsed.y.toFixed(2)}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: gridColor },
+          ticks: { color: textColor, maxTicksLimit: 8, font: { size: 11 } },
+          border: { color: 'transparent' },
+        },
+        y: {
+          position: 'left',
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 } },
+          border: { color: 'transparent' },
+        },
+        y2: {
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: accentRed, font: { size: 10 },
+            callback: v => v + '%' },
+          border: { color: 'transparent' },
+        },
+      },
+    },
+  });
+}
+
+// ══════════════════════════════════════════════════
+// DIRECTION PIE
+// ══════════════════════════════════════════════════
+function drawDirChart(signals) {
+  window._dirData = signals;
+  const isDark = document.documentElement.dataset.theme === 'dark';
+
+  const counts = { buy: 0, sell: 0, hold: 0 };
+  signals.forEach(s => { if (counts[s.direction] !== undefined) counts[s.direction]++; });
+
+  const colors = {
+    buy:  isDark ? '#00d4a4' : '#059669',
+    sell: isDark ? '#ff4d6d' : '#dc2626',
+    hold: isDark ? '#fbbf24' : '#d97706',
+  };
+
+  if (dirChart) dirChart.destroy();
+  const ctx = document.getElementById('dirChart').getContext('2d');
+  dirChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['买入','卖出','观望'],
+      datasets: [{
+        data: [counts.buy, counts.sell, counts.hold],
+        backgroundColor: [colors.buy, colors.sell, colors.hold],
+        borderWidth: 0,
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: isDark ? '#1a2235' : '#fff',
+          borderColor: isDark ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.08)',
+          borderWidth: 1,
+          bodyColor: isDark ? '#e8edf5' : '#111827',
+        },
+      },
+    },
+  });
+
+  // 自定义图例
+  const legend = document.getElementById('dirLegend');
+  const labels  = ['买入','卖出','观望'];
+  const keys    = ['buy','sell','hold'];
+  legend.innerHTML = keys.map((k,i) => `
+    <div style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2)">
+      <div style="width:8px;height:8px;border-radius:2px;background:${colors[k]}"></div>
+      ${labels[i]} ${counts[k]}
+    </div>`).join('');
+}
+
+// ══════════════════════════════════════════════════
+// SENTIMENT GAUGE
+// ══════════════════════════════════════════════════
+function drawSentimentGauge(data) {
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  if (!data || !data.value) return;
+
+  if (sentimentGauge) sentimentGauge.destroy();
+
+  const v = data.value;
+  const ctx = document.getElementById('sentimentGauge').getContext('2d');
+
+  // 颜色区间: 0-25红, 25-45橙, 45-55黄, 55-75浅绿, 75-100绿
+  const getColor = (val) => {
+    if (val <= 25) return '#ff4d6d';
+    if (val <= 45) return '#fbbf24';
+    if (val <= 55) return '#94a3b8';
+    if (val <= 75) return '#34d399';
+    return '#00d4a4';
+  };
+
+  const color = getColor(v);
+
+  sentimentGauge = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [v, 100 - v],
+        backgroundColor: [color, isDark ? '#1a2235' : '#e5e7eb'],
+        borderWidth: 0,
+        circumference: 270,
+        rotation: 225,
+        cutout: '75%',
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+    },
+    plugins: [{
+      id: 'gaugeCenter',
+      afterDraw(chart) {
+        const { ctx, width, height } = chart;
+        ctx.restore();
+        const fontSize = (height / 120).toFixed(2);
+        ctx.font = `bold ${fontSize}em 'DM Mono', monospace`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = color;
+        ctx.fillText(v.toFixed(1), width / 2, height / 2 - 8);
+        ctx.font = `${(fontSize * 0.55).toFixed(2)}em 'Inter', sans-serif`;
+        ctx.fillStyle = isDark ? '#8899b4' : '#6b7280';
+        const labels = {extreme_fear:'极度恐惧',fear:'恐惧',neutral:'中性',greed:'贪婪',extreme_greed:'极度贪婪'};
+        ctx.fillText(labels[data.label] || data.label, width / 2, height / 2 + 20);
+        ctx.save();
+      },
+    }],
+  });
+
+  // 细节文字
+  const detail = document.getElementById('sentimentDetail');
+  detail.innerHTML = [
+    `融资 ${(data.margin_score||50).toFixed(0)}`,
+    `资金 ${(data.fund_flow_score||50).toFixed(0)}`,
+    `基差 ${(data.basis_score||50).toFixed(0)}`,
+    `宽度 ${(data.breadth_score||50).toFixed(0)}`,
+    `动量 ${(data.momentum_score||50).toFixed(0)}`,
+  ].join(' &nbsp;·&nbsp; ');
+}
+
+// ══════════════════════════════════════════════════
+// SIGNAL CARDS
+// ══════════════════════════════════════════════════
+function renderSignalCards(signals) {
+  const grid = document.getElementById('signalGrid');
+  const today = new Date().toISOString().slice(0,10);
+  const todaySignals = signals.filter(s => s.signal_date === today);
+  const show = todaySignals.length ? todaySignals : signals.slice(0,6);
+
+  document.getElementById('sigBadge').textContent =
+    todaySignals.length ? `今日 ${todaySignals.length} 条` : `最近 ${show.length} 条`;
+
+  if (!show.length) {
+    grid.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">暂无信号</div></div>`;
+    return;
+  }
+
+  grid.innerHTML = show.map(s => {
+    const dir = s.direction || 'hold';
+    const ret = s.actual_return;
+    const retStr = ret != null ? ((ret*100>=0?'+':'')+(ret*100).toFixed(2)+'%') : '待结算';
+    const retCls = ret == null ? '' : (ret>=0?'pos':'neg');
+    return `
+    <div class="signal-card" data-dir="${dir}">
+      <div class="signal-top">
+        <div>
+          <div class="signal-symbol">${s.symbol}</div>
+          <div class="signal-date">${s.signal_date}</div>
+        </div>
+        <div class="dir-badge ${dir}">${{buy:'买入',sell:'卖出',hold:'观望'}[dir]||dir}</div>
+      </div>
+      <div class="signal-metrics">
+        <div class="metric"><div class="metric-label">置信度</div><div class="metric-value">${s.confidence}</div></div>
+        <div class="metric"><div class="metric-label">仓位</div><div class="metric-value">${(s.suggested_position*100).toFixed(0)}%</div></div>
+        <div class="metric"><div class="metric-label">止损</div><div class="metric-value">${(s.stop_loss*100).toFixed(1)}%</div></div>
+        <div class="metric"><div class="metric-label">收益</div><div class="metric-value ${retCls}">${retStr}</div></div>
+      </div>
+      <div class="confidence-bar"><div class="confidence-fill" style="width:${s.confidence}%"></div></div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════
+// SIGNAL TABLE
+// ══════════════════════════════════════════════════
+function renderSignalTable(signals) {
+  const tbody = document.getElementById('signalTable');
+  document.getElementById('tableCount').textContent = `共 ${signals.length} 条`;
+
+  if (!signals.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text3)">暂无数据</td></tr>`;
+    return;
+  }
+
+  const dirLabel = { buy:'🟢 买入', sell:'🔴 卖出', hold:'🟡 观望' };
+  tbody.innerHTML = [...signals].reverse().map(s => {
+    const ret = s.actual_return;
+    const retStr = ret != null ? ((ret*100>=0?'+':'')+(ret*100).toFixed(2)+'%') : '-';
+    const retCls = ret == null ? '' : (ret>=0?'pos':'neg');
+    const correct = s.is_correct == null ? '-' : (s.is_correct ? '✓' : '✗');
+    return `
+    <tr>
+      <td class="mono">${s.signal_date}</td>
+      <td class="mono">${s.symbol}</td>
+      <td>${dirLabel[s.direction]||s.direction}</td>
+      <td>${s.confidence}</td>
+      <td>${(s.suggested_position*100).toFixed(0)}%</td>
+      <td>${(s.stop_loss*100).toFixed(1)}%</td>
+      <td class="mono">${(s.composite_score||0).toFixed(1)}</td>
+      <td class="mono ${retCls}">${retStr}</td>
+      <td style="color:${s.is_correct?'var(--accent)':'var(--accentRed)'}">${correct}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════
+// CONFIG PANEL
+// ══════════════════════════════════════════════════
+function renderConfig(cfg) {
+  const grid = document.getElementById('configGrid');
+  const s = cfg.strategy || {}, r = cfg.risk || {}, sig = cfg.signals || {};
+  const styleMap = { balanced:'均衡', aggressive:'激进', conservative:'保守' };
+
+  grid.innerHTML = `
+    <div class="config-card">
+      <div class="chart-title" style="margin-bottom:16px">策略设置</div>
+      <div class="config-row">
+        <span class="config-key">当前风格</span>
+        <span class="style-badge ${s.style||'balanced'}">${styleMap[s.style]||s.style}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">市场</span>
+        <span class="config-val">${s.market||'A股'}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">监控标的</span>
+        <span class="config-val accent">${(s.symbols||[]).join('、')}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">最大仓位</span>
+        <span class="config-val">${((r.max_position||0)*100).toFixed(0)}%</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">止损线</span>
+        <span class="config-val">${((r.stop_loss||0)*100).toFixed(1)}%</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">止盈线</span>
+        <span class="config-val">${((r.take_profit||0)*100).toFixed(1)}%</span>
+      </div>
+    </div>
+    <div class="config-card">
+      <div class="chart-title" style="margin-bottom:16px">信号参数</div>
+      <div class="config-row">
+        <span class="config-key">RSI 超买阈值</span>
+        <span class="config-val">${sig.rsi_overbought||70}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">RSI 超卖阈值</span>
+        <span class="config-val">${sig.rsi_oversold||30}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">MACD 权重</span>
+        <span class="config-val">${sig.macd_weight||0.4}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">RSI 权重</span>
+        <span class="config-val">${sig.rsi_weight||0.3}</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">量价权重</span>
+        <span class="config-val">${sig.volume_weight||0.3}</span>
+      </div>
+      <div class="config-row" style="margin-top:8px">
+        <span class="config-key" style="color:var(--text3);font-size:12px">通过对话框修改任意参数</span>
+        <button onclick="toggleChat()" style="font-size:12px;padding:4px 12px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--accent);cursor:pointer">打开对话</button>
+      </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════
+// REFRESH
+// ══════════════════════════════════════════════════
+async function refreshAll(btn) {
+  btn.classList.add('spinning');
+  await loadAll();
+  btn.classList.remove('spinning');
+  toast('数据已更新');
+}
+
+// ══════════════════════════════════════════════════
+// CHAT
+// ══════════════════════════════════════════════════
+function toggleChat() {
+  chatOpen = !chatOpen;
+  const panel = document.getElementById('chatPanel');
+  const fab   = document.getElementById('chatFab');
+  panel.classList.toggle('open', chatOpen);
+  fab.classList.toggle('active', chatOpen);
+  if (chatOpen) {
+    document.getElementById('chatInput').focus();
+    scrollChat();
+  }
+}
+
+function scrollChat() {
+  const msgs = document.getElementById('chatMessages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function addBubble(text, role) {
+  const msgs = document.getElementById('chatMessages');
+  const div  = document.createElement('div');
+  div.className = `chat-bubble ${role}`;
+  div.textContent = text;
+  msgs.appendChild(div);
+  scrollChat();
+  return div;
+}
+
+function addTyping() {
+  const msgs = document.getElementById('chatMessages');
+  const div  = document.createElement('div');
+  div.className = 'chat-bubble typing';
+  div.innerHTML = `<div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
+  msgs.appendChild(div);
+  scrollChat();
+  return div;
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const msg   = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  addBubble(msg, 'user');
+  chatHistory.push({ role: 'user', content: msg });
+
+  const typing = addTyping();
+
+  try {
+    const data = await apiPost('/api/chat', {
+      message: msg,
+      history: chatHistory.filter(h => h.role === 'user' || h.role === 'assistant'),
+    });
+    typing.remove();
+
+    if (!data) {
+      addBubble('无法连接后端服务，请确认 python app.py 已启动，端口 7860', 'ai');
+      return;
+    }
+
+    const reply = data.reply || '（空回复，请检查 DEEPSEEK_API_KEY 是否已设置）';
+    addBubble(reply, 'ai');
+    chatHistory.push({ role: 'assistant', content: reply });
+
+    if (reply.includes('已更新')) {
+      setTimeout(loadAll, 1000);
+    }
+  } catch(e) {
+    typing.remove();
+    addBubble('网络异常：' + e.message, 'ai');
+  }
+}
+
+function sendQuick(btn) {
+  document.getElementById('chatInput').value = btn.textContent;
+  sendMessage();
+}
+
+// ══════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════
+loadAll();
+
+// 每5分钟自动刷新
+setInterval(loadAll, 5 * 60 * 1000);
+
+// ── 系统状态 ──────────────────────────────────
+async function refreshStatus() {
+  const data = await apiGet('/api/status');
+  if (!data) return;
+  const el = document.getElementById('statusBar');
+  if (!el) return;
+  const parts = [];
+  if (data.signal_latest) parts.push(`信号最新:${data.signal_latest}`);
+  if (data.market_latest) parts.push(`行情最新:${data.market_latest}`);
+  if (data.margin_latest) parts.push(`融资:${data.margin_latest}`);
+  if (data.futures_latest) parts.push(`基差:${data.futures_latest}`);
+  if (data.sentiment_value) parts.push(`情绪:${data.sentiment_value}`);
+  if (data.db_size_mb) parts.push(`DB:${data.db_size_mb}MB`);
+  if (data.signal_total) parts.push(`信号:${data.signal_total}条`);
+  el.textContent = parts.join(' · ') || '系统状态加载中...';
+}
+setInterval(refreshStatus, 60 * 1000);
+refreshStatus();
+</script>
+
+<div style="position:fixed;bottom:0;left:0;right:0;z-index:99;padding:4px 16px;font-size:11px;color:var(--text3);background:var(--card);border-top:1px solid var(--border);display:flex;justify-content:space-between">
+  <span id="statusBar">系统状态加载中...</span>
+  <span id="statusTime"></span>
+</div>
+</body>
+</html>

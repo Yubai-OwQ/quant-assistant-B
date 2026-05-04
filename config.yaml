@@ -1,0 +1,48 @@
+strategy:
+  mode: conservative
+  market: A股
+  symbols:
+  - '000001'
+  - '510300'
+  - '159915'
+risk:
+  max_position: 0.8
+  stop_loss: 0.05
+  take_profit: 0.15
+  max_drawdown_limit: 0.1
+signals:
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  bb_period: 20
+  bb_std: 2.0
+scheduler:
+  data_fetch_time: 09:00
+  analysis_time: 09:30
+  optimize_time: '22:00'
+  timezone: Asia/Shanghai
+deepseek:
+  model: deepseek-chat
+  max_tokens: 2000
+  temperature: 0.3
+northbound:
+  enabled: true
+  lookback_days: 20
+  alert_threshold: 5.0
+sentiment:
+  enabled: true
+  weights:
+    margin: 0.30
+    fund_flow: 0.25
+    futures_basis: 0.20
+    breadth: 0.15
+    momentum: 0.10
+  extreme_fear: 25
+  fear: 45
+  neutral: 55
+  greed: 75
+version: 1
+last_updated: '2026-04-30'
