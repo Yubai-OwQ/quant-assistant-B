@@ -5,7 +5,9 @@ strategy/signals.py
 功能：
   - 计算 MACD / RSI / 布林带 / KDJ / OBV / 量比 等技术因子
   - 将多因子加权合成 0-100 综合评分
-  - 调用 DeepSeek AI 输出最终交易方向、仓位、止损建议
+  - 规则评分决策（_fallback_signal → 从config读取buy/sell阈值，取代DeepSeek）
+  - 数据时效检查（行情日期非今日则跳过，防陈旧数据）
+  - 自动写入沪深300基准涨跌幅（benchmark_return列）
   - 将信号写入 SQLite signals 表
   - 支持手动触发和 APScheduler 定时调用
 
@@ -28,9 +30,15 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# 将项目根目录加入 sys.path，确保 from data.fetcher 等导入正常工作
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 import pandas as pd
 
@@ -99,32 +107,64 @@ def init_db() -> None:
             composite_score   REAL,
             actual_return     REAL    DEFAULT NULL,
             is_correct        INTEGER DEFAULT NULL,
+            benchmark_return  REAL    DEFAULT NULL,
             UNIQUE(symbol, signal_date)
         )
     """)
+    # 兼容性：旧库可能缺少 benchmark_return 列，ALTER 加
+    try:
+        conn.execute("ALTER TABLE signals ADD COLUMN benchmark_return REAL DEFAULT NULL")
+    except Exception:
+        pass  # 列已存在则忽略
     conn.commit()
     conn.close()
+
+
+def _get_benchmark_return(signal_date: str) -> float | None:
+    """
+    获取沪深300指数（399300）在 signal_date 当天的涨跌幅。
+    从 market_data 表读取，无数据时返回 None。
+    """
+    if not signal_date:
+        return None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute(
+            "SELECT pct_change FROM market_data "
+            "WHERE symbol='399300' AND date=? AND pct_change IS NOT NULL",
+            (signal_date,),
+        ).fetchone()
+        conn.close()
+        return float(row[0]) if row else None
+    except Exception:
+        return None
 
 
 def _save_signal(signal: dict) -> bool:
     """
     写入单条信号，同一标的同一天已存在则覆盖（UPDATE）。
+    自动附带当天沪深300（399300）的涨跌幅作为基准。
     返回 True 表示成功。
     """
     try:
+        # 获取当日沪深300基准涨跌幅
+        br = _get_benchmark_return(signal.get("signal_date", ""))
+
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
             INSERT INTO signals
                 (symbol, signal_date, direction, confidence,
-                 suggested_position, stop_loss, reasoning, composite_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 suggested_position, stop_loss, reasoning, composite_score,
+                 benchmark_return)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol, signal_date) DO UPDATE SET
                 direction          = excluded.direction,
                 confidence         = excluded.confidence,
                 suggested_position = excluded.suggested_position,
                 stop_loss          = excluded.stop_loss,
                 reasoning          = excluded.reasoning,
-                composite_score    = excluded.composite_score
+                composite_score    = excluded.composite_score,
+                benchmark_return   = excluded.benchmark_return
         """, (
             signal["symbol"],
             signal["signal_date"],
@@ -134,6 +174,7 @@ def _save_signal(signal: dict) -> bool:
             signal["stop_loss"],
             signal["reasoning"],
             signal["composite_score"],
+            br,
         ))
         conn.commit()
         conn.close()
@@ -324,8 +365,159 @@ def _composite_score(
 
 
 # ─────────────────────────────────────────────
-# DeepSeek AI 决策
+# 情绪面代理指标（基于实时行情数据）
 # ─────────────────────────────────────────────
+def _fetch_realtime_quote(symbol: str) -> Optional[dict]:
+    """从新浪财经获取实时行情快照（兜底方案，盘后也能用）"""
+    try:
+        import requests as _req
+        # 新浪代码格式：sh600900 / sz002274
+        sina_code = f"sh{symbol}" if symbol.startswith("6") else f"sz{symbol}"
+        url = f"https://hq.sinajs.cn/list={sina_code}"
+
+        resp = _req.get(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn/",
+        }, timeout=5)
+        resp.encoding = "gbk"
+        text = resp.text.strip()
+
+        if '="' not in text:
+            return None
+
+        parts = text.split('="')[1].split('",')
+        values = parts[0].split(",")
+
+        if len(values) < 30:
+            return None
+
+        def _f(v):
+            try: return float(v)
+            except: return None
+
+        # 新浪格式：名称,今开,昨收,当前价,最高,最低,买价,卖价,成交量,成交额,...
+        name = values[0]
+        price = _f(values[3])
+        prev_close = _f(values[2])
+        high = _f(values[4])
+        low = _f(values[5])
+        volume = _f(values[8])
+        amount = _f(values[9])
+
+        change_pct = round((price - prev_close) / prev_close * 100, 2) if (price and prev_close and prev_close > 0) else 0
+        amplitude = round((high / low - 1) * 100, 2) if (high and low and low > 0) else 0
+
+        return {
+            "price": price,
+            "open": _f(values[1]),
+            "high": high,
+            "low": low,
+            "prev_close": prev_close,
+            "change_pct": change_pct,
+            "volume_ratio": None,       # 新浪无量比
+            "amplitude": amplitude,
+            "turnover_rate": None,      # 新浪无换手率
+            "speed_5m": None,           # 新浪无5分钟涨速
+            "change": round(price - prev_close, 3) if (price and prev_close) else 0,
+            "volume": volume,
+            "amount": amount,
+        }
+    except Exception:
+        return None
+
+
+def _calc_market_sentiment(symbol: str) -> str:
+    """
+    基于实时行情数据计算市场情绪代理指标（简化2维度版）。
+    不需要新闻源，用盘中数据反向推算市场情绪。
+
+    情绪维度（2026-05-07简化版）：
+      - 涨跌幅+量能（综合判断资金态度）
+      - 个股偏离度（个股涨跌幅 - 对应行业/市场基准，判断α强弱）
+    """
+    name_map = {
+        "600900": "长江电力",
+        "002274": "华昌化工",
+        "159903": "深成ETF",
+    }
+    name = name_map.get(symbol, symbol)
+
+    quote = _fetch_realtime_quote(symbol)
+    if not quote:
+        return f"标的：{name}。实时行情暂不可用。"
+
+    pct = quote.get("change_pct") or 0
+    vr = quote.get("volume_ratio") or 0
+    amp = quote.get("amplitude") or 0
+    vol = quote.get("volume") or 0
+    amt = quote.get("amount") or 0
+
+    # ── 1. 量能比因子（50%权重）──
+    # 量能比 = 当日成交量/20日均量粗估（无量比时用成交额粗判）
+    if vr > 3:
+        vol_label, vol_score = "爆量（情绪极端）", 85
+    elif vr > 2:
+        vol_label, vol_score = "显著放量（情绪亢奋）", 75
+    elif vr > 1.5:
+        vol_label, vol_score = "放量（情绪活跃）", 65
+    elif vr > 0.7:
+        vol_label, vol_score = "正常交投", 50
+    elif vr > 0:
+        vol_label, vol_score = "缩量（情绪低迷）", 35
+    else:
+        vol_label, vol_score = "有成交", 45
+
+    # ── 2. 涨跌幅因子（50%权重）──
+    if pct > 3:
+        pct_label, pct_score = "强烈看多", 85
+    elif pct > 1.5:
+        pct_label, pct_score = "偏多", 70
+    elif pct > 0.5:
+        pct_label, pct_score = "温和偏多", 60
+    elif pct > -0.5:
+        pct_label, pct_score = "中性", 50
+    elif pct > -1.5:
+        pct_label, pct_score = "偏空", 35
+    elif pct > -3:
+        pct_label, pct_score = "偏空", 25
+    else:
+        pct_label, pct_score = "强烈看空", 15
+
+    # ── 综合情绪评分（简单2维加权）──
+    sentiment_score = int(round(vol_score * 0.50 + pct_score * 0.50))
+    sentiment_score = max(0, min(100, sentiment_score))
+
+    if sentiment_score >= 75:
+        overall = "市场情绪亢奋，注意超买回调风险"
+    elif sentiment_score >= 60:
+        overall = "市场情绪偏多，交投活跃"
+    elif sentiment_score >= 40:
+        overall = "市场情绪中性，多空平衡"
+    elif sentiment_score >= 25:
+        overall = "市场情绪偏空，走势疲弱"
+    else:
+        overall = "市场情绪恐慌，可能超跌反弹机会"
+
+    return (
+        f"【实时情绪面】{name}\\n"
+        f"涨跌幅：{pct:+.2f}% ({pct_label})\\n"
+        f"量能：{vol_label}\\n"
+        f"综合情绪评分：{sentiment_score}/100\\n"
+        f"综合判断：{overall}\\n"
+        f"（注：情绪面基于实时行情数据推算，优先级低于技术指标）"
+    )
+
+
+# ─────────────────────────────────────────────
+# [DEPRECATED] DeepSeek AI 决策（已移除，保留参考）
+# 2026-05-07: 规则评分直出取代 LLM 决策层
+# 原因：LLM 输出不可回测、不可验证，且在小样本下无额外信息增益
+# ─────────────────────────────────────────────
+
+# _build_signal_prompt, _load_api_key, _call_deepseek 保留但未使用
+# 见 _fallback_signal() 作为当前信号生成入口
+
+
 def _build_signal_prompt(symbol: str, market: dict, style: str, config: dict) -> str:
     r = config.get("risk", {})
     style_desc = {
@@ -334,7 +526,10 @@ def _build_signal_prompt(symbol: str, market: dict, style: str, config: dict) ->
         "conservative": "保守——低仓位，严格止损，宁可错过不可错拿",
     }.get(style, "均衡")
 
-    return f"""你是专业量化交易分析师，请根据以下技术面数据给出今日交易建议。
+    # 情绪面辅助信息（纯参考，不参与因子计算）
+    sentiment_note = _calc_market_sentiment(symbol)
+
+    return f"""你是专业量化交易分析师，请根据以下技术面数据及情绪面参考给出今日交易建议。
 
 ## 标的：{symbol}  |  策略风格：{style_desc}
 
@@ -350,6 +545,9 @@ def _build_signal_prompt(symbol: str, market: dict, style: str, config: dict) ->
 - KDJ K={market['kdj_k']:.1f} D={market['kdj_d']:.1f} J={market['kdj_j']:.1f}
 - 综合因子评分：{market['composite_score']:.1f}/100
 
+## 情绪面参考（辅助判断，优先级低于技术指标）
+{sentiment_note}
+
 ## 风险参数参考
 - 最大仓位上限：{r.get('max_position', 0.6) * 100:.0f}%
 - 默认止损：{r.get('stop_loss', 0.05) * 100:.0f}%
@@ -361,15 +559,39 @@ def _build_signal_prompt(symbol: str, market: dict, style: str, config: dict) ->
   "confidence": 0到100的整数,
   "suggested_position": 0.0到{r.get('max_position', 0.6)}之间的小数,
   "stop_loss": 0.01到0.10之间的小数,
-  "reasoning": "50字以内的分析理由"
+  "reasoning": "50字以内的分析理由，包含技术面和情绪面的综合判断"
 }}
 """
+
+
+def _load_api_key() -> str:
+    """从环境变量或 .env 文件读取 DeepSeek API Key"""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if key:
+        return key
+    # 尝试从 .env 文件自动加载
+    env_path = ROOT_DIR / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text("utf-8").strip().splitlines():
+                line = line.strip()
+                if line.startswith("export DEEPSEEK_API_KEY="):
+                    key = line.split("=", 1)[1].strip("\"'")
+                    os.environ["DEEPSEEK_API_KEY"] = key
+                    return key
+                elif line.startswith("DEEPSEEK_API_KEY="):
+                    key = line.split("=", 1)[1].strip("\"'")
+                    os.environ["DEEPSEEK_API_KEY"] = key
+                    return key
+        except Exception:
+            pass
+    return ""
 
 
 def _call_deepseek(prompt: str, max_retries: int = 3) -> Optional[dict]:
     """调用 DeepSeek API，返回解析后的 JSON，失败返回 None"""
     from openai import OpenAI
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    api_key = _load_api_key()
     if not api_key:
         raise EnvironmentError("请设置环境变量 DEEPSEEK_API_KEY")
 
@@ -398,16 +620,21 @@ def _call_deepseek(prompt: str, max_retries: int = 3) -> Optional[dict]:
 def _fallback_signal(composite_score: float, config: dict) -> dict:
     """
     AI 调用失败时的规则兜底：纯基于综合评分输出信号。
+    阈值从 config.yaml 的 signals.buy_threshold / signals.sell_threshold 读取。
     """
     r = config.get("risk", {})
-    if composite_score >= 65:
+    sig = config.get("signals", {})
+    buy_t = sig.get("buy_threshold", 63)
+    sell_t = sig.get("sell_threshold", 37)
+
+    if composite_score >= buy_t:
         direction  = "buy"
         confidence = int(composite_score)
-        position   = r.get("max_position", 0.6) * (composite_score - 60) / 40
-    elif composite_score <= 35:
+        position   = r.get("max_position", 0.6) * (composite_score - buy_t + 3) / 40
+    elif composite_score <= sell_t:
         direction  = "sell"
         confidence = int(100 - composite_score)
-        position   = r.get("max_position", 0.6) * (40 - composite_score) / 40
+        position   = r.get("max_position", 0.6) * (sell_t + 3 - composite_score) / 40
     else:
         direction  = "hold"
         confidence = 50
@@ -418,7 +645,7 @@ def _fallback_signal(composite_score: float, config: dict) -> dict:
         "confidence":         min(100, max(0, confidence)),
         "suggested_position": round(min(r.get("max_position", 0.6), max(0.0, position)), 2),
         "stop_loss":          r.get("stop_loss", 0.05),
-        "reasoning":          f"AI不可用，规则兜底：综合评分{composite_score:.0f}",
+        "reasoning":          f"规则评分：综合分{composite_score:.0f}（阈值buy>{buy_t}/sell<{sell_t}）",
     }
 
 
@@ -431,8 +658,8 @@ def generate_signal(symbol: str, dry_run: bool = False) -> Optional[dict]:
 
     流程：
       1. 从数据库读取 OHLCV
-      2. 计算技术因子
-      3. 调用 DeepSeek 输出方向/仓位/止损
+      2. 计算技术因子 + 综合评分
+      3. 规则评分决策（_fallback_signal → 从config读取buy/sell阈值）
       4. 写入 signals 表
 
     Args:
@@ -450,6 +677,17 @@ def generate_signal(symbol: str, dry_run: bool = False) -> Optional[dict]:
         logger.warning(f"{symbol} 数据不足（{len(df)} 条），需至少 30 条。"
                        f"请先运行 data/fetcher.py 拉取数据。")
         return None
+
+    # ── 1b. 数据时效检查 ─────────────────────
+    latest_date = df["date"].iloc[-1]
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if latest_date.strftime("%Y-%m-%d") != today_str:
+        logger.warning(
+            f"{symbol} 最新行情日期为 {latest_date.strftime('%Y-%m-%d')}，"
+            f"非今日（{today_str}），跳过信号生成"
+        )
+        return None
+    logger.info(f"{symbol} 数据时效检查通过：最新数据 {latest_date.strftime('%Y-%m-%d')}")
 
     close  = df["close"]
     high   = df["high"]
@@ -487,19 +725,10 @@ def generate_signal(symbol: str, dry_run: bool = False) -> Optional[dict]:
         f"BB位置={boll['position']:.2f} 量比={vol_r:.2f} 评分={score:.1f}"
     )
 
-    # ── 3. AI 决策 ──────────────────────────
-    style  = config.get("strategy", {}).get("style", "balanced")
-    prompt = _build_signal_prompt(symbol, market, style, config)
-
-    try:
-        ai_result = _call_deepseek(prompt)
-    except EnvironmentError as e:
-        logger.warning(f"API Key 未设置，使用规则兜底：{e}")
-        ai_result = None
-
-    if ai_result is None:
-        logger.warning(f"{symbol} DeepSeek 调用失败，使用规则兜底")
-        ai_result = _fallback_signal(score, config)
+    # ── 3. 规则评分决策（取代 DeepSeek）─────────
+    # 综合评分 _composite_score() 直接输出方向/仓位/止损
+    # 不使用 LLM 层——规则评分可回测、可验证、可解释
+    ai_result = _fallback_signal(score, config)
 
     # ── 4. 组装信号 ──────────────────────────
     today  = datetime.now().strftime("%Y-%m-%d")

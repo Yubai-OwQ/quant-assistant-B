@@ -2,9 +2,13 @@ strategy:
   mode: conservative
   market: A股
   symbols:
-  - '000001'
-  - '510300'
-  - '159915'
+  - '600900'
+  - '159903'
+  - '002274'
+  allocation:
+    '600900': 0.50
+    '159903': 0.30
+    '002274': 0.20
 risk:
   max_position: 0.8
   stop_loss: 0.05
@@ -19,10 +23,13 @@ signals:
   rsi_oversold: 30
   bb_period: 20
   bb_std: 2.0
+  buy_threshold: 63            # 买入信号阈值（>=此值出buy）
+  sell_threshold: 37           # 卖出信号阈值（<=此值出sell）
 scheduler:
   data_fetch_time: 09:00
   analysis_time: 09:30
-  optimize_time: '22:00'
+  optimize_time: '22:00'           # 调优时间（每周五执行，非每天）
+  optimize_day: fri                # 2026-05-07 改为每周五（原每晚10点）
   timezone: Asia/Shanghai
 deepseek:
   model: deepseek-chat
@@ -44,5 +51,36 @@ sentiment:
   fear: 45
   neutral: 55
   greed: 75
-version: 1
-last_updated: '2026-04-30'
+version: 2.1.0
+last_updated: '2026-05-07'
+# 版本历史:
+#   2.0.0 - 原始版本
+#   2.1.0 - 2026-05-07 移除DeepSeek决策层, 情绪简化, 调优改每周五, 阈值参数化
+
+# ─── 盘中实时监控配置 ──────────────────────────
+monitor:
+  enabled: true
+  interval_seconds: 30         # 轮询间隔（秒）- 盯止损用30秒
+  alert_on_change_pct: 2.0     # 涨跌幅超过此值提醒 %
+  alert_on_speed_pct: 1.0      # 5分钟涨速超过此值提醒 %
+  alert_on_volume_ratio: 2.0   # 量比超过此值提醒
+  alert_on_rsi_high: 80        # RSI 超过此值超买提醒
+  alert_on_rsi_low: 20         # RSI 低于此值超卖提醒
+  data_source: auto            # auto/eastmoney/sina
+  push_to_wechat: true         # 异动时是否推送到微信
+  stop_loss_watch:
+    '002274':
+      name: 华昌化工
+      buy_price: 6.89          # 成本价（2026-05-07确认）
+      stop_loss_pct: 5
+      remind_at_pct: 4.5       # 亏损达到此比例时提醒
+    '600900':
+      name: 长江电力
+      buy_price: 27.15         # 成本价（2026-05-07确认）
+      stop_loss_pct: 5
+      remind_at_pct: 4.5
+    '159903':
+      name: 深成ETF南方
+      buy_price: 1.878         # 成本价（2026-05-07确认）
+      stop_loss_pct: 5
+      remind_at_pct: 4.5

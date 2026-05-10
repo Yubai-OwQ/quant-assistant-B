@@ -21,7 +21,8 @@ from data.fetcher import (
 )
 from strategy.signals import calculate_all_signals, run_backtest, run_all
 from strategy.ai_engine import analyze_market, nightly_optimize
-from strategy.optimizer import run_nightly_optimization
+from strategy.optimizer import run_weekly_optimization
+from strategy.ic_monitor import run_ic_monitor
 from storage.db import init_db, save_signal, save_performance, save_config_version, get_performance_history
 
 logging.basicConfig(
@@ -117,14 +118,13 @@ def run_daily_analysis():
     logger.info("=== 每日分析完成 ===")
 
 
-def run_nightly_optimize():
-    """夜间参数调优任务（每天22:00触发）"""
-    logger.info("=== 开始夜间AI调优 ===")
+def run_weekly_optimize():
+    """周度参数调优任务（每周五22:00触发，替代原每晚10点）"""
+    logger.info("=== 开始周度调优 ===")
     with _state_lock:
         config = _state["config"].copy()
 
-    # 使用 optimizer.py 的全功能调优（含备份、校验、写入）
-    report = run_nightly_optimization(days=10, dry_run=False)
+    report = run_weekly_optimization(days=60, dry_run=False)
 
     if report.get("action") == "update":
         with _state_lock:
@@ -135,11 +135,28 @@ def run_nightly_optimize():
             except Exception:
                 pass
         logger.info(f"调优完成，变更: {report.get('changes', {})}")
-        logger.info(f"AI评估: {report.get('reason', '')}")
+        logger.info(f"理由: {report.get('reason', '')}")
     else:
-        logger.info(f"AI判断无需调整: {report.get('reason', '保持现状')}")
+        logger.info(f"无需调整: {report.get('reason', '保持现状')}")
 
-    logger.info("=== 夜间调优完成 ===")
+    logger.info("=== 周度调优完成 ===")
+
+
+def run_daily_ic_monitor():
+    """每日IC/ICIR监控（收盘后16:10触发）"""
+    logger.info("=== 开始每日IC监控 ===")
+    try:
+        result = run_ic_monitor(days=30, dry_run=False)
+        alerts = result.get("alerts", [])
+        if alerts:
+            logger.warning(f"IC监控发现 {len(alerts)} 条报警")
+            for a in alerts:
+                logger.warning(f"  {a}")
+        else:
+            logger.info("IC监控：指标正常")
+    except Exception as e:
+        logger.error(f"IC监控异常: {e}", exc_info=True)
+    logger.info("=== IC监控完成 ===")
 
 
 def get_state():
@@ -167,11 +184,21 @@ def start_scheduler():
 
     opt_time = cfg.get("optimize_time", "22:00")
     h2, m2 = opt_time.split(":")
-    scheduler.add_job(run_nightly_optimize, CronTrigger(hour=int(h2), minute=int(m2)),
-                      id="nightly_optimize", name="夜间AI调优")
+    scheduler.add_job(run_weekly_optimize,
+                      CronTrigger(day_of_week="fri", hour=int(h2), minute=int(m2)),
+                      id="weekly_optimize", name="周度调优（每周五）")
+
+    # IC监控：每个交易日收盘后16:10（A股15:00收盘，数据15:30后就绪）
+    scheduler.add_job(run_daily_ic_monitor,
+                      CronTrigger(day_of_week="mon-fri", hour=16, minute=10),
+                      id="daily_ic_monitor", name="每日IC监控")
 
     scheduler.start()
-    logger.info(f"调度器已启动 → 每日分析: {fetch_time}，夜间调优: {opt_time}")
+    logger.info(
+        f"调度器已启动 → 每日分析: {fetch_time}，"
+        f"周度调优: 周五 {opt_time}，"
+        f"IC监控: 每日16:10"
+    )
     return scheduler
 
 

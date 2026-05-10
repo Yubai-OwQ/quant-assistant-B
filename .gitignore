@@ -37,3 +37,15 @@ Thumbs.db
 .env
 .env.local
 *.pem
+
+# ── 运行期生成数据 ─────────────────────────
+alerts/
+monitor/
+sentiment/
+*.json
+test_boards*.py
+cleanup.py
+launcher.py
+run.py
+start_monitor.sh
+board_rankings.py

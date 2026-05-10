@@ -60,13 +60,20 @@ python app.py
 
 09:15 ── strategy/signals.run_all()
            ├── 读 market_data → 计算技术因子
-           ├── 调用 DeepSeek AI 决策
+           ├── 规则评分直出信号（2026-05-07 移除 DeepSeek 决策层）
+           ├── 四因子加权合成 0-100 分 → buy/sell/hold
            └── INSERT → signals 表
 
-22:00 ── strategy/optimizer.run_nightly_optimization()
-           ├── 读近期 signals 绩效
-           ├── 调 DeepSeek 建议参数变更
-           ├── 备份旧配置 → 写入新 config.yaml
+收盘后 ── monitor/monitor_daemon.py
+           ├── 交易日 9:15-15:05 守护进程轮询
+           ├── 跌破止损线推微信提醒
+           └── crontab: 15 9 启动 / 15 5 清理
+
+周五 22:00 ── strategy/optimizer.run_weekly_optimization()
+           ├── 读近期 signals 绩效（含 IC/胜率）
+           ├── 80/20 时序分割遍历候选阈值
+           ├── 验证集 IC 未改善 → 跳过（防护）
+           ├── 备份旧配置 → diff 写入新 config.yaml
            └── 记录 config_versions 表
 ```
 
@@ -87,11 +94,12 @@ python app.py
 | 数据 | 来源 | 存储表 | 更新频率 | 说明 |
 |------|------|--------|----------|------|
 | A股日线行情 | AKShare (东方财富) | `market_data` | 每交易日 | 前复权，支持 index/etf/stock |
+| 实时行情（兜底） | 新浪财经 `hq.sinajs.cn` | — | 盘中轮询 | 东财 push2 API 已封 (`HTTP 000`)，改用新浪兜底。新浪返回 GBK 编码的 JS 变量格式，需 `resp.encoding='gbk'` 后解析逗号分隔字段 |
 | 北向资金 | AKShare (数据截至 2024-08) | `northbound_flow` | 手动 | 沪港通/深港通净流入历史 |
 | 融资融券 | AKShare 沪深交易所 | `margin_data` | 每交易日 | 融资余额变化，杠杆资金态度 |
 | 股指期货升贴水 | AKShare Sina 期货 | `futures_basis` | 每交易日 | IF 主力基差，机构情绪 |
 | 市场情绪 | 自行计算 | `sentiment_index` | 每交易日 | 5 维度加权合成 |
-| 交易信号 | DeepSeek AI 决策 | `signals` | 每交易日 | 含方向/置信度/仓位/止损方向/置信度/仓位/止损 |
+| 交易信号 | DeepSeek AI 决策 | `signals` | 每交易日 | 含方向/置信度/仓位/止损 |
 | 策略配置 | `config.yaml` | `config_versions` | 调优时 | 版本化管理，支持回滚 |
 
 ---
@@ -153,10 +161,14 @@ OBV = cumsum(volume × sign(close.diff()))
 score = MACD×40% + RSI×30% + 量价×30% + 布林补正
 score ∈ [0, 100]
 
-≥ 63 → buy,  仓位 = 0.3 + (score-60)/40×max_position
-≤ 37 → sell, 仓位同上
-38-62 → hold, 仓位 0
-```
+buy_threshold = config.signals.buy_threshold（默认63）
+sell_threshold = config.signals.sell_threshold（默认37）
+
+≥ buy_threshold → buy,  仓位 = 0.3 + (score-buy_t+3)/40×max_position
+≤ sell_threshold → sell, 仓位同上
+buy_threshold > score > sell_threshold → hold, 仓位 0
+
+（阈值由 optimizer.py 每周五 80/20 时序分割调优，验证集 IC 不改善则跳过）
 
 ### KDJ / OBV（辅助参考）
 
@@ -184,6 +196,35 @@ neutral       (45-55) → ⚪ 中性
 greed         (55-75) → 🟢 贪婪
 extreme_greed (75-100) → 💚 极度贪婪
 ```
+
+### 实时行情情绪代理指标（signals.py _calc_market_sentiment）
+
+当新闻API不可用时，用盘中实时行情数据推算市场情绪代理指标：
+
+| 维度 | 权重 | 数据来源 |
+|------|------|----------|
+| 涨跌幅 | 方向性情绪 | 新浪实时行情 |
+| 成交量/量比 | 情绪活跃度 | 新浪，无量比时用成交额粗估 |
+| 5分钟涨速 | 短期情绪动量 | 新浪无此字段时用涨跌幅+振幅推断 |
+| 振幅 | 多空分歧度 | 新浪实时高低价计算 |
+
+流程：`_fetch_realtime_quote()` 拉新浪 → `_calc_market_sentiment()` 返回文本摘要 → 注入 DeepSeek prompt
+
+重要：新浪只返回基础行情（无volume_ratio/speed_5m等字段），缺失字段需降级处理，不可硬依赖。
+
+---
+
+## 盘中实时监控 & 止损推送
+
+由 `monitor/monitor_daemon.py` 守护进程实现，交易日 9:15-15:05 运行：
+
+- 每分钟通过新浪轮询所有持仓标的最新价
+- 计算当日涨跌幅，与 config.yaml `monitor.stop_loss_watch` 中的成本价对比
+- 跌破5%止损线时 → 输出微信推送格式消息 → 推送到用户微信
+- 每只标的每交易日仅触发一次，避免刷屏
+- 系统 crontab 自动启停：`15 9 * * 1-5` 启动，`5 15 * * 1-5` 清理
+
+盘中监控配置见 `config.yaml` 的 `monitor.stop_loss_watch` 段。
 
 ---
 
@@ -320,4 +361,4 @@ python app.py
 
 ---
 
-*生成时间: 2026-05-03*
+*生成时间: 2026-05-07*
