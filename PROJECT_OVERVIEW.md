@@ -1,46 +1,51 @@
 # 量化助手 — 项目概览
 
-A股量化交易助手，Gradio + FastAPI 双前端界面，DeepSeek AI 驱动。自动化数据拉取、技术因子计算、信号生成、参数调优、情绪分析全流程。
+A股量化交易助手，APScheduler 驱动的 24h 自动运行循环。技术因子计算 → 规则评分决策（无 LLM），新浪实时行情兜底，盘中监控+止损推送。
 
 ---
 
 ## 架构总览
 
 ```
-                       ┌─────────────────────┐
-                       │   frontend.html      │  ← 自定义仪表盘 (Chart.js)
-                       │  http://:7860/frontend│
-                       └─────┬───────────────┘
-                             │ GET/POST
-                       ┌─────▼───────────────┐
-                       │   FastAPI (custom)   │  ← /api/* 路由
-                       │   gradio.routes.App  │
-                       └─────┬───────────────┘
-                             │
-               ┌─────────────┼─────────────┐
-               │             │             │
-         ┌─────▼──┐   ┌─────▼──┐   ┌─────▼──┐
-         │ fetcher│   │ signals│   │ai_engine│
-         │ .py    │   │ .py    │   │ .py     │
-         └───┬────┘   └───┬────┘   └───┬────┘
-             │            │            │
-         ┌───▼────────────▼────────────▼───┐
-         │        SQLite (quant.db)        │
-         │ market_data / signals /         │
-         │ northbound_flow / sentiment_    │
-         │ index / config_versions         │
-         └────────────────────────────────┘
+                        ┌─────────────────────────────┐
+                        │   scheduler.py (APScheduler) │  ← 24h 主调度器
+                        │   ┌─ 09:00 拉取行情         │
+                        │   ├─ 09:15 生成信号          │
+                        │   ├─ 盘中 轮询监控           │
+                        │   └─ 周五22:00 参数调优      │
+                        └─────────┬───────────────────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    │             │             │
+              ┌─────▼──┐   ┌─────▼──┐   ┌─────▼────┐
+              │ fetch  │   │ signals│   │ optimizer │
+              │ er.py  │   │ .py    │   │ .py       │
+              └───┬────┘   └───┬────┘   └─────┬─────┘
+                  │            │              │
+              ┌───▼────────────▼──────────────▼────┐
+              │        SQLite (db/quant.db)        │
+              │ market_data / signals /             │
+              │ sentiment_index / config_versions   │
+              └────────────────────────────────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │ monitor_daemon.py │  ← 盘中实时监控
+                    │ 新浪轮询 + 微信推  │
+                    └───────────────────┘
 ```
 
-### 启动入口
+### 启动方式
 
 ```bash
-python app.py
-# → 仪表盘: http://127.0.0.1:7860/frontend
-# → Gradio: http://127.0.0.1:7860
+# 调度器 + Gradio 界面
+python scheduler.py
+
+# 仅盘中监控守护进程
+bash start_monitor.sh        # 或手动运行：
+python monitor/monitor_daemon.py
 ```
 
-`app.py` 创建 `gradio.routes.App` 实例，注册所有 `/api/*` FastAPI 路由后，将 Gradio UI 挂载到该自定义 App 上启动。
+`scheduler.py` 启动 APScheduler 后台调度 + Gradio 对话界面，所有定时任务在调度器内注册。
 
 ---
 
@@ -50,24 +55,23 @@ python app.py
 
 ```
 09:00 ── data/fetcher.update_all()
-           ├── AKShare 拉取行情 (OHLCV)
+           ├── 新浪 hq.sinajs.cn 拉取行情 (OHLCV)  ← 首选
+           ├── 腾讯 web.sqt.gtimg.cn 备选
            ├── INSERT OR IGNORE → market_data 表
            └── 增量更新（跳过已有日期）
 
-09:10 ── data/fetcher.fetch_fear_greed_index()
-           ├── 计算多维度情绪指数 0-100
-           └── INSERT OR REPLACE → sentiment_index 表
-
 09:15 ── strategy/signals.run_all()
            ├── 读 market_data → 计算技术因子
-           ├── 规则评分直出信号（2026-05-07 移除 DeepSeek 决策层）
+           ├── 规则评分直出信号（无 DeepSeek/LLM 决策层）
+           ├── MACD(40%) + RSI(30%) + 量价(30%) + 布林补正(±5)
            ├── 四因子加权合成 0-100 分 → buy/sell/hold
-           └── INSERT → signals 表
+           └── INSERT OR REPLACE → signals 表
 
-收盘后 ── monitor/monitor_daemon.py
+盘中 ── monitor/monitor_daemon.py
            ├── 交易日 9:15-15:05 守护进程轮询
-           ├── 跌破止损线推微信提醒
-           └── crontab: 15 9 启动 / 15 5 清理
+           ├── 每 30 秒新浪拉取持仓最新价
+           ├── 跌破止损线 → 推微信提醒（每只每日仅一次）
+           └── crontab: 15 9 启动 / 5 15 清理
 
 周五 22:00 ── strategy/optimizer.run_weekly_optimization()
            ├── 读近期 signals 绩效（含 IC/胜率）
@@ -77,36 +81,34 @@ python app.py
            └── 记录 config_versions 表
 ```
 
-### 前端数据流
-
-```
-用户打开 /frontend
-  → loadAll() 并行 GET /api/* (Promise.allSettled)
-  → 各 endpoint 查 DB，无数据时自动触发拉取
-  → Chart.js 渲染 5 张图表/指标
-  → 每 5 分钟自动刷新
-```
-
 ---
 
 ## 数据源
 
 | 数据 | 来源 | 存储表 | 更新频率 | 说明 |
 |------|------|--------|----------|------|
-| A股日线行情 | AKShare (东方财富) | `market_data` | 每交易日 | 前复权，支持 index/etf/stock |
-| 实时行情（兜底） | 新浪财经 `hq.sinajs.cn` | — | 盘中轮询 | 东财 push2 API 已封 (`HTTP 000`)，改用新浪兜底。新浪返回 GBK 编码的 JS 变量格式，需 `resp.encoding='gbk'` 后解析逗号分隔字段 |
-| 北向资金 | AKShare (数据截至 2024-08) | `northbound_flow` | 手动 | 沪港通/深港通净流入历史 |
+| A股日线行情 | 新浪 `hq.sinajs.cn`（首选）+ 腾讯 `web.sqt.gtimg.cn`（备选） | `market_data` | 每交易日 | 东财 push2 API 已被封（`HTTP 000`），改用新浪兜底。新浪返回 GBK 编码，需 `resp.encoding='gbk'` 后解析 |
+| 实时行情（盘中监控） | 新浪 `hq.sinajs.cn` | — | 30秒轮询 | 涨跌幅/量比/振幅，新浪无 volume_ratio/speed_5m 等字段，缺失字段降级处理 |
+| 北向资金 | AKShare（数据截至 2024-08） | `northbound_flow` | 手动 | 沪港通/深港通净流入历史 |
 | 融资融券 | AKShare 沪深交易所 | `margin_data` | 每交易日 | 融资余额变化，杠杆资金态度 |
-| 股指期货升贴水 | AKShare Sina 期货 | `futures_basis` | 每交易日 | IF 主力基差，机构情绪 |
-| 市场情绪 | 自行计算 | `sentiment_index` | 每交易日 | 5 维度加权合成 |
-| 交易信号 | DeepSeek AI 决策 | `signals` | 每交易日 | 含方向/置信度/仓位/止损 |
+| 市场情绪 | 自行计算（2维简化版） | `sentiment_index` | 每交易日 | 涨跌幅+量能加权（2026-05-07简化） |
+| 交易信号 | 规则评分直出（无 LLM） | `signals` | 每交易日 | 含方向/置信度/仓位/止损/基准涨跌幅 |
 | 策略配置 | `config.yaml` | `config_versions` | 调优时 | 版本化管理，支持回滚 |
+
+### 数据合理性验证
+
+每次拉取行情后做以下检查（参见 `data/realtime.py`）：
+- **涨跌幅范围**：`-50% < pct < +50%`，超出则标记为垃圾数据
+- **价格正数**：`price > 0`
+- **交叉验证**：新浪数据异常时用腾讯接口二次确认
+- **假阳性过滤**：盘后数据更新时跳过非交易日代理指标
 
 ---
 
 ## 技术因子（strategy/signals.py）
 
 ### MACD（权重 40%）
+
 ```
 EMA_fast = close.ewm(span=12).mean()
 EMA_slow = close.ewm(span=26).mean()
@@ -120,6 +122,7 @@ hist = (DIF - DEA) × 2
 ```
 
 ### RSI（权重 30%）
+
 ```
 delta = close.diff()
 gain = delta.clip(lower=0)
@@ -134,6 +137,7 @@ RSI = 100 - 100 / (1 + avg_g/avg_l)
 ```
 
 ### 布林带（补正 ±5 分）
+
 ```
 MA = close.rolling(20).mean()
 std = close.rolling(20).std()
@@ -146,6 +150,7 @@ position = (close - 下轨) / (上轨 - 下轨)
 ```
 
 ### 量价因子（权重 30%）
+
 ```
 量比 = volume[-1] / mean(volume[-21:-1])
 OBV = cumsum(volume × sign(close.diff()))
@@ -157,6 +162,7 @@ OBV = cumsum(volume × sign(close.diff()))
 ```
 
 ### 综合评分 & 决策
+
 ```
 score = MACD×40% + RSI×30% + 量价×30% + 布林补正
 score ∈ [0, 100]
@@ -164,11 +170,12 @@ score ∈ [0, 100]
 buy_threshold = config.signals.buy_threshold（默认63）
 sell_threshold = config.signals.sell_threshold（默认37）
 
-≥ buy_threshold → buy,  仓位 = 0.3 + (score-buy_t+3)/40×max_position
+≥ buy_threshold → buy,  仓位 = min(max_pos, max(0, max_pos × (score-buy_t+3)/40))
 ≤ sell_threshold → sell, 仓位同上
 buy_threshold > score > sell_threshold → hold, 仓位 0
 
 （阈值由 optimizer.py 每周五 80/20 时序分割调优，验证集 IC 不改善则跳过）
+```
 
 ### KDJ / OBV（辅助参考）
 
@@ -176,41 +183,28 @@ KDJ、OBV 作为辅助指标参与信号生成，不直接计入评分权重。
 
 ---
 
-## 市场情绪指数（data/fetcher.py）
+## 市场情绪指数
 
-### 5 维度加权合成 (0-100)
+### 盘中实时情绪代理（signals.py `_calc_market_sentiment`）
+
+2026-05-07 简化版，基于实时行情数据推算，不需要外部新闻源：
 
 | 维度 | 权重 | 数据来源 |
 |------|------|----------|
-| 融资情绪 | 30% | `margin_data` 表，近 10 日融资余额变化率 |
-| 主力资金流向 | 25% | AKShare `stock_market_fund_flow()` |
-| 期货升贴水 | 20% | `futures_basis` 表，IF 主力近 5 日平均基差 |
-| 市场宽度 | 15% | 上证指数近 5 日上涨天数占比 |
-| 指数动量 | 10% | 指数价格偏离 MA20 的百分比 |
+| 涨跌幅 | 50% | 新浪实时行情 |
+| 量能比 | 50% | 量比粗估（无量比时用成交额推断） |
+
+综合评分映射：≥75 亢奋 / ≥60 偏多 / ≥40 中性 / ≥25 偏空 / <25 恐慌
 
 ### 标签区间
+
 ```
-extreme_fear  (0-25) → 🔴 极度恐惧
+extreme_fear  (0-25)  → 🔴 极度恐惧
 fear          (25-45) → 🟠 恐惧
 neutral       (45-55) → ⚪ 中性
 greed         (55-75) → 🟢 贪婪
 extreme_greed (75-100) → 💚 极度贪婪
 ```
-
-### 实时行情情绪代理指标（signals.py _calc_market_sentiment）
-
-当新闻API不可用时，用盘中实时行情数据推算市场情绪代理指标：
-
-| 维度 | 权重 | 数据来源 |
-|------|------|----------|
-| 涨跌幅 | 方向性情绪 | 新浪实时行情 |
-| 成交量/量比 | 情绪活跃度 | 新浪，无量比时用成交额粗估 |
-| 5分钟涨速 | 短期情绪动量 | 新浪无此字段时用涨跌幅+振幅推断 |
-| 振幅 | 多空分歧度 | 新浪实时高低价计算 |
-
-流程：`_fetch_realtime_quote()` 拉新浪 → `_calc_market_sentiment()` 返回文本摘要 → 注入 DeepSeek prompt
-
-重要：新浪只返回基础行情（无volume_ratio/speed_5m等字段），缺失字段需降级处理，不可硬依赖。
 
 ---
 
@@ -218,19 +212,30 @@ extreme_greed (75-100) → 💚 极度贪婪
 
 由 `monitor/monitor_daemon.py` 守护进程实现，交易日 9:15-15:05 运行：
 
-- 每分钟通过新浪轮询所有持仓标的最新价
-- 计算当日涨跌幅，与 config.yaml `monitor.stop_loss_watch` 中的成本价对比
-- 跌破5%止损线时 → 输出微信推送格式消息 → 推送到用户微信
-- 每只标的每交易日仅触发一次，避免刷屏
+- 每 **30 秒**通过新浪轮询所有持仓标的最新价
+- 计算当日涨跌幅，与 `config.yaml` 中 `monitor.stop_loss_watch` 的成本价对比
+- 跌破 5% 止损线 → 输出微信推送格式消息 → 推送到用户微信
+- 跌破 4.5% 提醒线 → 输出预警消息
+- **每只标的每交易日仅触发一次**，避免刷屏
+- 超过 15:05 非交易时段自动退出轮询
 - 系统 crontab 自动启停：`15 9 * * 1-5` 启动，`5 15 * * 1-5` 清理
 
-盘中监控配置见 `config.yaml` 的 `monitor.stop_loss_watch` 段。
+**当前持仓（2026-05-07确认）：**
+
+| 代码 | 名称 | 成本价 | 配比 | 止损线(5%) |
+|------|------|--------|------|-----------|
+| 600900 | 长江电力 | 27.15 | 50% | 25.79 |
+| 159903 | 深成ETF南方 | 1.878 | 30% | 1.784 |
+| 002274 | 华昌化工 | 6.89 | 20% | 6.55 |
+
+盘中监控配置见 `config.yaml` 的 `monitor` 段。
 
 ---
 
 ## 数据库表结构
 
 ### market_data（行情）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | symbol | TEXT | 标的代码 |
@@ -240,6 +245,7 @@ extreme_greed (75-100) → 💚 极度贪婪
 | pct_change | REAL | 涨跌幅% |
 
 ### signals（信号）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | symbol | TEXT | 标的 |
@@ -251,8 +257,10 @@ extreme_greed (75-100) → 💚 极度贪婪
 | composite_score | REAL | 综合评分 |
 | actual_return | REAL | 实际收益（次日结算） |
 | is_correct | INTEGER | 方向判断是否正确 |
+| benchmark_return | REAL | 沪深300当日涨跌幅（性能基准） |
 
 ### northbound_flow（北向资金）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | date | TEXT | 交易日 (PRIMARY KEY) |
@@ -262,6 +270,7 @@ extreme_greed (75-100) → 💚 极度贪婪
 | cumulative_flow | REAL | 历史累计净买额 |
 
 ### margin_data（融资融券）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | date | TEXT | 交易日 (PRIMARY KEY) |
@@ -271,16 +280,8 @@ extreme_greed (75-100) → 💚 极度贪婪
 | sh_margin_inflow | REAL | 沪市融资买入额 |
 | sz_margin_inflow | REAL | 深市融资买入额 |
 
-### futures_basis（期货升贴水）
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| date | TEXT | 交易日 (PRIMARY KEY) |
-| futures_close | REAL | IF 主力合约收盘价 |
-| spot_close | REAL | 沪深 300 现货收盘价 |
-| basis | REAL | 升贴水 = 期货 - 现货 |
-| basis_pct | REAL | 升贴水百分比 |
-
 ### sentiment_index（情绪指数）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | date | TEXT | 交易日 (PRIMARY KEY) |
@@ -293,6 +294,7 @@ extreme_greed (75-100) → 💚 极度贪婪
 | momentum_score | REAL | 动量得分 |
 
 ### config_versions（配置版本）
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | version | INTEGER | 版本号 |
@@ -303,13 +305,15 @@ extreme_greed (75-100) → 💚 极度贪婪
 
 ## 参数调优（strategy/optimizer.py）
 
-夜间 22:00 自动执行：
-1. 查询最近 10 天 signals 绩效（胜率/平均收益/方向分布）
-2. 构建 Prompt 发给 DeepSeek
-3. DeepSeek 返回参数调整建议（R SI 阈值/周期/权重/止损）
-4. 参数边界校验（clamp 到合法范围）
-5. 备份旧 `config.yaml` → 写入新配置
-6. 支持 `--dry-run` 预览不写入
+每周五 22:00 自动执行（scheduler.py 配置）：
+
+1. 查询近期 signals 绩效（胜率/IC/平均收益/方向分布）
+2. 80/20 时序分割：前 80% 数据训练候选阈值，后 20% 验证
+3. 遍历候选参数组合：`buy_threshold ∈ {58,60,63,65,68,70}`，`sell_threshold = 100 - buy_threshold`
+4. **验证集 IC 未改善** → 跳过本次调优（不修改 config.yaml）
+5. 新参数优于旧参数 → 备份旧配置 → 写入新配置 → 记录 config_versions
+6. 新旧参数并行运行一周静默对比（logging 层面，不下发新信号）
+7. 支持 `--dry-run` 预览不写入
 
 ### 调优原则
 - 胜率 < 45% → 优先收紧止损，降低仓位上限
@@ -319,19 +323,13 @@ extreme_greed (75-100) → 💚 极度贪婪
 
 ---
 
-## 前端仪表盘
+## IC 监控（strategy/ic_monitor.py）
 
-5 个 KPI 指标：
-- 累计净值 | 近30日胜率 | 平均单次收益 | 最大回撤 | 市场情绪
+独立监控模块，每日计算信号 composite_score 与次日实际收益之间的 IC（RankIC）：
 
-5 个图表/组件：
-- **净值 & 回撤曲线** — 近 60 日累计净值 + 最大回撤（双轴）
-- **信号方向分布** — 饼图，买入/卖出/观望占比
-- **市场情绪仪表盘** — 0-100 环形图，含维度分解
-- **最新信号卡片** — 今日信号，方向/置信度/仓位/收益
-- **信号历史表格** — 完整信号记录，带收益结算状态
-
-支持深色/浅色主题切换，5 分钟自动刷新。
+- **RankIC**：信号评分与次日涨跌幅的斯皮尔曼秩相关系数
+- 连续 5 日 RankIC 为负 → 发出退化告警（日志 + 微信推送）
+- 阈值可配置（默认连续负值天数 ≥ 5）
 
 ---
 
@@ -339,26 +337,24 @@ extreme_greed (75-100) → 💚 极度贪婪
 
 ```bash
 # 安装依赖
-pip install akshare gradio openai pyyaml plotly pandas "httpx<0.28"
+pip install akshare gradio pyyaml plotly pandas "httpx<0.28" apscheduler
 
-# 设置 API Key（DeepSeek）
-export DEEPSEEK_API_KEY=sk-xxxx
+# 设置环境变量（如用到 DeepSeek，当前已不依赖）
+export DEEPSEEK_API_KEY=***
 
 # 拉取行情数据
-python data/fetcher.py
-
-# 计算情绪指数
-python data/fetcher.py --sentiment
+python data/fetcher.py --all
 
 # 生成信号
 python strategy/signals.py
 
-# 启动 Web 界面
-python app.py
-# → 仪表盘: http://127.0.0.1:7860/frontend
-# → Gradio: http://127.0.0.1:7860
+# 启动完整调度器（推荐）
+python scheduler.py
+
+# 启动独立盘中监控
+python monitor/monitor_daemon.py
 ```
 
 ---
 
-*生成时间: 2026-05-07*
+*最后更新: 2026-05-10*
