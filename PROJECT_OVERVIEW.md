@@ -1,6 +1,8 @@
 # 量化助手 — 项目概览
 
-A股量化交易助手，**完全自主运行**，不依赖任何外部AI助手。APScheduler 驱动的 24h 自动运行循环，技术因子计算 → 规则评分直出决策，新浪实时行情兜底，盘中监控+止损微信推送。
+A股量化交易助手，通过 Hermes Agent 连接进行管理。APScheduler 驱动的 24h 自动运行循环，技术因子计算 → 规则评分直出决策，新浪实时行情兜底，盘中监控+止损微信推送。
+
+> ⚠️ 本项目通过 Hermes 进行配置、调优和异常处理。没有 Hermes 时系统按最后配置自动运行，但停止工作后需通过 Hermes 排查修复。
 
 ---
 
@@ -8,7 +10,7 @@ A股量化交易助手，**完全自主运行**，不依赖任何外部AI助手�
 
 ```
                         ┌─────────────────────────────┐
-                        │   scheduler.py (APScheduler) │  ← 24h 主调度器，无人值守
+                        │   scheduler.py (APScheduler) │  ← 24h 主调度器
                         │   ┌─ 09:00 自动拉取行情     │
                         │   ├─ 09:15 自动生成信号      │
                         │   ├─ 盘中 自动轮询监控      │
@@ -29,30 +31,28 @@ A股量化交易助手，**完全自主运行**，不依赖任何外部AI助手�
               └────────────────────────────────────┘
                               │
                     ┌─────────▼─────────┐
-                    │ monitor_daemon.py │  ← 盘中实时监控，独立进程
-                    │ 新浪轮询 + 微信推  │     无需人工盯盘
+                    │ monitor_daemon.py │  ← 盘中实时监控
+                    │ 新浪轮询 + 微信推  │
                     └───────────────────┘
 ```
 
-### 启动方式（任选其一）
+### 启动方式
 
 ```bash
-# 【推荐】完整无人值守模式
+# 【推荐】完整模式
 python scheduler.py
 # → 自动完成：行情拉取 → 信号生成 → 盘中监控 → 周五调优
 
-# 仅盘中监控（独立，可配合手动操作）
+# 仅盘中监控
 python monitor/monitor_daemon.py
 
 # 仅生成信号
 python strategy/signals.py
 ```
 
-`scheduler.py` 启动后完全自主运行，无需人工干预。APScheduler 在后台守护，所有定时任务自动触发。即使 Hermes 不在线，系统照常运转，盘中异动和止损提醒仍能推送到微信。
-
 ---
 
-## 工作流程（完全自动化，无人值守）
+## 工作流程
 
 ### 每日自动循环
 
@@ -70,12 +70,11 @@ python strategy/signals.py
            ├── 四因子加权合成 0-100 分 → buy/sell/hold
            └── INSERT OR REPLACE → signals 表
 
-盘中 ── monitor/monitor_daemon.py（独立进程）
+盘中 ── monitor/monitor_daemon.py
            ├── 交易日 9:15-15:05 自动启动
            ├── 每 30 秒新浪拉取持仓最新价
            ├── 跌破止损线 → 自动推送微信提醒
-           ├── 每只标的每交易日仅触发一次，防刷屏
-           └── 无需任何人工操作
+           └── 每只标的每交易日仅触发一次，防刷屏
 
 周五 22:00 ── strategy/optimizer.run_weekly_optimization()
            ├── 读近期 signals 绩效（含 IC/胜率）
@@ -84,12 +83,6 @@ python strategy/signals.py
            ├── 备份旧配置 → diff 写入新 config.yaml
            └── 记录 config_versions 表
 ```
-
-### 关键设计原则
-- **无外部依赖**：决策不依赖 DeepSeek/OpenAI 等外部 API，规则评分纯代码直出
-- **离线可用**：所有计算在本地完成，行情数据通过新浪/腾讯 HTTP 接口获取
-- **无人值守**：scheduler + monitor 开机自启后自动运行，Hermes 不在线也不影响盘中监控和推送
-- **自修复**：数据超限自动交叉验证、垃圾数据自动过滤、调优 IC 退化自动跳过
 
 ---
 
@@ -105,22 +98,19 @@ python strategy/signals.py
 | 交易信号 | 规则评分直出（无 LLM） | `signals` | 每交易日 | 含方向/置信度/仓位/止损/基准涨跌幅 |
 | 策略配置 | `config.yaml` | `config_versions` | 调优时 | 版本化管理，支持回滚 |
 
-### 数据合理性验证（自动执行）
+### 数据合理性验证
 
-```python
-# 每次拉取行情后自动检查（data/realtime.py）
-- 涨跌幅范围：-50% < pct < +50%  → 超出标记为垃圾数据
-- 价格正数：price > 0
+每次拉取行情后自动执行（`data/realtime.py`）：
+- 涨跌幅范围：`-50% < pct < +50%` → 超出标记为垃圾数据，需 Hermes 介入确认
+- 价格正数：`price > 0`
 - 交叉验证：新浪异常时自动用腾讯接口二次确认
-- 假阳性过滤：盘后更新时跳过非交易日代理指标
-- 2026-05-06 实盘教训：旧进程曾用东财跑了124轮假异动，从此强制验证
-```
+- 假阳性过滤：盘后数据更新时跳过非交易日代理指标
 
 ---
 
 ## 技术因子（strategy/signals.py）
 
-所有因子计算纯 pandas 实现，**不依赖 TA-Lib 或任何外部 API**。
+所有因子计算纯 pandas 实现，不依赖 TA-Lib 或任何外部 API。
 
 ### MACD（权重 40%）
 
@@ -190,16 +180,15 @@ buy_threshold > score > sell_threshold → hold, 仓位 0
 
 ---
 
-## 盘中实时监控 & 止损推送（独立进程，无需 Hermes）
+## 盘中实时监控 & 止损推送
 
-由 `monitor/monitor_daemon.py` 守护进程实现，**独立于 scheduler，开机自启后完全自主运行**：
+由 `monitor/monitor_daemon.py` 守护进程实现：
 
 - **交易日自动启停**：系统 crontab `15 9 * * 1-5` 启动，`5 15 * * 1-5` 清理
 - 每 **30 秒**通过新浪轮询所有持仓标的最新价
 - 跌破 5% 止损线 → 自动推送微信消息（每只标的每交易日仅触发一次）
 - 跌破 4.5% 提醒线 → 预警消息
 - 超过 15:05 非交易时段自动退出
-- **Hermes 不在线时照常推送**（监控进程独立，推送到微信不受影响）
 
 ### 当前持仓
 
@@ -215,40 +204,48 @@ buy_threshold > score > sell_threshold → hold, 仓位 0
 
 1. 查询近期 signals 绩效（胜率/IC/平均收益/方向分布）
 2. 80/20 时序分割遍历候选阈值
-3. **IC 未改善自动跳过**，绝不盲改参数
+3. IC 未改善自动跳过，绝不盲改参数
 4. 新参数优于旧参数 → 自动备份旧配置 → 写入新配置
-5. 新旧参数并行运行一周静默对比
-6. 支持 `--dry-run` 预览不写入
+5. 支持 `--dry-run` 预览不写入
 
 ---
 
-## IC 监控（strategy/ic_monitor.py，自动告警）
+## IC 监控（strategy/ic_monitor.py）
 
 每日自动计算信号 composite_score 与次日实际收益之间的 RankIC：
 - 连续 5 日 RankIC 为负 → 自动发出退化告警（日志 + 微信推送）
-- 无需人工检查，系统自检自告警
+- Hermes 收到告警后介入分析退化原因
+
+---
+
+## 与 Hermes 的交互
+
+虽然是全自动化系统，但以下场景需要联系 Hermes：
+
+| 场景 | 说明 |
+|------|------|
+| ❌ 系统停止运行 | scheduler 或 monitor 进程意外退出，需 Hermes 排查重启 |
+| ⚠️ IC 退化告警 | RankIC 连续为负，需 Hermes 分析因子有效性 |
+| 🔧 策略调整 | 修改持仓、调参数、换标的，通过 Hermes 操作 config.yaml |
+| 📊 数据异常 | 行情接口变更/被封、垃圾数据，需 Hermes 修复数据源 |
+| 📋 复盘分析 | 回顾信号历史表现、回测结果，通过 Hermes 读取数据库 |
 
 ---
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖（一次性）
+# 安装依赖（一次性）
 pip install akshare pyyaml plotly pandas "httpx<0.28" apscheduler
 
-# 2. 启动无人值守模式（推荐）
+# 启动
 python scheduler.py
-# → 一切自动运行，无需后续操作
 
-# 3. 或手动执行单项任务
-python data/fetcher.py --all          # 拉取行情
-python strategy/signals.py            # 生成信号
-python monitor/monitor_daemon.py      # 启动盘中监控（独立进程）
+# 手动执行单项任务
+python data/fetcher.py --all           # 拉取行情
+python strategy/signals.py             # 生成信号
+python monitor/monitor_daemon.py       # 启动盘中监控
 python strategy/optimizer.py --dry-run  # 预览参数调优
-
-# 4. 设置开机自启（如需）
-# 添加 crontab:
-# 15 9 * * 1-5 cd /opt/quant-trader && python monitor/monitor_daemon.py
 ```
 
 ---
@@ -259,7 +256,8 @@ python strategy/optimizer.py --dry-run  # 预览参数调优
 /opt/quant-trader/
 ├── config.yaml              ← 策略配置（仓位/止损/阈值等，版本化管理）
 ├── PROJECT_OVERVIEW.md      ← 本文件
-├── scheduler.py             ← 主调度器（APScheduler，推荐入口）
+├── CONTEXT.md               ← Hermes 自动读取的项目上下文
+├── scheduler.py             ← 主调度器（APScheduler）
 ├── data/
 │   ├── fetcher.py           ← 行情拉取（新浪+腾讯）
 │   └── realtime.py          ← 实时数据代理 + 合理性验证
@@ -269,7 +267,7 @@ python strategy/optimizer.py --dry-run  # 预览参数调优
 │   ├── ic_monitor.py        ← IC 退化监控
 │   └── intraday_monitor.py  ← 盘内信号辅助
 ├── monitor/
-│   └── monitor_daemon.py    ← 盘中监控守护进程（独立，推微信）
+│   └── monitor_daemon.py    ← 盘中监控守护进程
 ├── db/
 │   └── quant.db             ← SQLite 数据库（自动创建）
 ├── logs/                    ← 运行日志
@@ -278,5 +276,4 @@ python strategy/optimizer.py --dry-run  # 预览参数调优
 
 ---
 
-*本项目设计目标：开机即用，无人值守，Hermes 在与不在一样运转。*
 *最后更新: 2026-05-10*
