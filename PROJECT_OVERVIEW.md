@@ -1,6 +1,6 @@
 # 量化助手 — 项目概览
 
-A股量化交易助手，APScheduler 驱动的 24h 自动运行循环。技术因子计算 → 规则评分决策（无 LLM），新浪实时行情兜底，盘中监控+止损推送。
+A股量化交易助手，**完全自主运行**，不依赖任何外部AI助手。APScheduler 驱动的 24h 自动运行循环，技术因子计算 → 规则评分直出决策，新浪实时行情兜底，盘中监控+止损微信推送。
 
 ---
 
@@ -8,11 +8,11 @@ A股量化交易助手，APScheduler 驱动的 24h 自动运行循环。技术�
 
 ```
                         ┌─────────────────────────────┐
-                        │   scheduler.py (APScheduler) │  ← 24h 主调度器
-                        │   ┌─ 09:00 拉取行情         │
-                        │   ├─ 09:15 生成信号          │
-                        │   ├─ 盘中 轮询监控           │
-                        │   └─ 周五22:00 参数调优      │
+                        │   scheduler.py (APScheduler) │  ← 24h 主调度器，无人值守
+                        │   ┌─ 09:00 自动拉取行情     │
+                        │   ├─ 09:15 自动生成信号      │
+                        │   ├─ 盘中 自动轮询监控      │
+                        │   └─ 周五22:00 自动参数调优  │
                         └─────────┬───────────────────┘
                                   │
                     ┌─────────────┼─────────────┐
@@ -29,29 +29,32 @@ A股量化交易助手，APScheduler 驱动的 24h 自动运行循环。技术�
               └────────────────────────────────────┘
                               │
                     ┌─────────▼─────────┐
-                    │ monitor_daemon.py │  ← 盘中实时监控
-                    │ 新浪轮询 + 微信推  │
+                    │ monitor_daemon.py │  ← 盘中实时监控，独立进程
+                    │ 新浪轮询 + 微信推  │     无需人工盯盘
                     └───────────────────┘
 ```
 
-### 启动方式
+### 启动方式（任选其一）
 
 ```bash
-# 调度器 + Gradio 界面
+# 【推荐】完整无人值守模式
 python scheduler.py
+# → 自动完成：行情拉取 → 信号生成 → 盘中监控 → 周五调优
 
-# 仅盘中监控守护进程
-bash start_monitor.sh        # 或手动运行：
+# 仅盘中监控（独立，可配合手动操作）
 python monitor/monitor_daemon.py
+
+# 仅生成信号
+python strategy/signals.py
 ```
 
-`scheduler.py` 启动 APScheduler 后台调度 + Gradio 对话界面，所有定时任务在调度器内注册。
+`scheduler.py` 启动后完全自主运行，无需人工干预。APScheduler 在后台守护，所有定时任务自动触发。即使 Hermes 不在线，系统照常运转，盘中异动和止损提醒仍能推送到微信。
 
 ---
 
-## 工作流程
+## 工作流程（完全自动化，无人值守）
 
-### 每日自动循环（由 scheduler.py + APScheduler 驱动）
+### 每日自动循环
 
 ```
 09:00 ── data/fetcher.update_all()
@@ -62,24 +65,31 @@ python monitor/monitor_daemon.py
 
 09:15 ── strategy/signals.run_all()
            ├── 读 market_data → 计算技术因子
-           ├── 规则评分直出信号（无 DeepSeek/LLM 决策层）
+           ├── 规则评分直出信号（纯代码，无 LLM）
            ├── MACD(40%) + RSI(30%) + 量价(30%) + 布林补正(±5)
            ├── 四因子加权合成 0-100 分 → buy/sell/hold
            └── INSERT OR REPLACE → signals 表
 
-盘中 ── monitor/monitor_daemon.py
-           ├── 交易日 9:15-15:05 守护进程轮询
+盘中 ── monitor/monitor_daemon.py（独立进程）
+           ├── 交易日 9:15-15:05 自动启动
            ├── 每 30 秒新浪拉取持仓最新价
-           ├── 跌破止损线 → 推微信提醒（每只每日仅一次）
-           └── crontab: 15 9 启动 / 5 15 清理
+           ├── 跌破止损线 → 自动推送微信提醒
+           ├── 每只标的每交易日仅触发一次，防刷屏
+           └── 无需任何人工操作
 
 周五 22:00 ── strategy/optimizer.run_weekly_optimization()
            ├── 读近期 signals 绩效（含 IC/胜率）
            ├── 80/20 时序分割遍历候选阈值
-           ├── 验证集 IC 未改善 → 跳过（防护）
+           ├── 验证集 IC 未改善 → 自动跳过（防误调）
            ├── 备份旧配置 → diff 写入新 config.yaml
            └── 记录 config_versions 表
 ```
+
+### 关键设计原则
+- **无外部依赖**：决策不依赖 DeepSeek/OpenAI 等外部 API，规则评分纯代码直出
+- **离线可用**：所有计算在本地完成，行情数据通过新浪/腾讯 HTTP 接口获取
+- **无人值守**：scheduler + monitor 开机自启后自动运行，Hermes 不在线也不影响盘中监控和推送
+- **自修复**：数据超限自动交叉验证、垃圾数据自动过滤、调优 IC 退化自动跳过
 
 ---
 
@@ -87,7 +97,7 @@ python monitor/monitor_daemon.py
 
 | 数据 | 来源 | 存储表 | 更新频率 | 说明 |
 |------|------|--------|----------|------|
-| A股日线行情 | 新浪 `hq.sinajs.cn`（首选）+ 腾讯 `web.sqt.gtimg.cn`（备选） | `market_data` | 每交易日 | 东财 push2 API 已被封（`HTTP 000`），改用新浪兜底。新浪返回 GBK 编码，需 `resp.encoding='gbk'` 后解析 |
+| A股日线行情 | 新浪 `hq.sinajs.cn`（首选）+ 腾讯 `web.sqt.gtimg.cn`（备选） | `market_data` | 每交易日 | 东财 push2 API 已被封（`HTTP 000`），使用新浪。新浪返回 GBK 编码，需 `resp.encoding='gbk'` 后解析 |
 | 实时行情（盘中监控） | 新浪 `hq.sinajs.cn` | — | 30秒轮询 | 涨跌幅/量比/振幅，新浪无 volume_ratio/speed_5m 等字段，缺失字段降级处理 |
 | 北向资金 | AKShare（数据截至 2024-08） | `northbound_flow` | 手动 | 沪港通/深港通净流入历史 |
 | 融资融券 | AKShare 沪深交易所 | `margin_data` | 每交易日 | 融资余额变化，杠杆资金态度 |
@@ -95,25 +105,29 @@ python monitor/monitor_daemon.py
 | 交易信号 | 规则评分直出（无 LLM） | `signals` | 每交易日 | 含方向/置信度/仓位/止损/基准涨跌幅 |
 | 策略配置 | `config.yaml` | `config_versions` | 调优时 | 版本化管理，支持回滚 |
 
-### 数据合理性验证
+### 数据合理性验证（自动执行）
 
-每次拉取行情后做以下检查（参见 `data/realtime.py`）：
-- **涨跌幅范围**：`-50% < pct < +50%`，超出则标记为垃圾数据
-- **价格正数**：`price > 0`
-- **交叉验证**：新浪数据异常时用腾讯接口二次确认
-- **假阳性过滤**：盘后数据更新时跳过非交易日代理指标
+```python
+# 每次拉取行情后自动检查（data/realtime.py）
+- 涨跌幅范围：-50% < pct < +50%  → 超出标记为垃圾数据
+- 价格正数：price > 0
+- 交叉验证：新浪异常时自动用腾讯接口二次确认
+- 假阳性过滤：盘后更新时跳过非交易日代理指标
+- 2026-05-06 实盘教训：旧进程曾用东财跑了124轮假异动，从此强制验证
+```
 
 ---
 
 ## 技术因子（strategy/signals.py）
+
+所有因子计算纯 pandas 实现，**不依赖 TA-Lib 或任何外部 API**。
 
 ### MACD（权重 40%）
 
 ```
 EMA_fast = close.ewm(span=12).mean()
 EMA_slow = close.ewm(span=26).mean()
-DIF = EMA_fast - EMA_slow
-DEA = DIF.ewm(span=9).mean()
+DIF = EMA_fast - EMA_slow,  DEA = DIF.ewm(span=9).mean()
 hist = (DIF - DEA) × 2
 
 → hist > 0 → 看涨 (60-100 分)
@@ -125,10 +139,8 @@ hist = (DIF - DEA) × 2
 
 ```
 delta = close.diff()
-gain = delta.clip(lower=0)
-loss = (-delta).clip(lower=0)
-avg_g = gain.ewm(com=13).mean()
-avg_l = loss.ewm(com=13).mean()
+gain = delta.clip(lower=0),  loss = (-delta).clip(lower=0)
+avg_g = gain.ewm(com=13).mean(),  avg_l = loss.ewm(com=13).mean()
 RSI = 100 - 100 / (1 + avg_g/avg_l)
 
 → RSI ≤ 超卖线(30) → 看涨 (75-100 分)
@@ -141,8 +153,7 @@ RSI = 100 - 100 / (1 + avg_g/avg_l)
 ```
 MA = close.rolling(20).mean()
 std = close.rolling(20).std()
-上轨 = MA + 2×std
-下轨 = MA - 2×std
+上轨 = MA + 2×std,  下轨 = MA - 2×std
 position = (close - 下轨) / (上轨 - 下轨)
 
 → position < 0.1 触下轨 → 超卖补正 +5
@@ -170,191 +181,102 @@ score ∈ [0, 100]
 buy_threshold = config.signals.buy_threshold（默认63）
 sell_threshold = config.signals.sell_threshold（默认37）
 
-≥ buy_threshold → buy,  仓位 = min(max_pos, max(0, max_pos × (score-buy_t+3)/40))
-≤ sell_threshold → sell, 仓位同上
+≥ buy_threshold → buy
+≤ sell_threshold → sell
 buy_threshold > score > sell_threshold → hold, 仓位 0
 
-（阈值由 optimizer.py 每周五 80/20 时序分割调优，验证集 IC 不改善则跳过）
-```
-
-### KDJ / OBV（辅助参考）
-
-KDJ、OBV 作为辅助指标参与信号生成，不直接计入评分权重。
-
----
-
-## 市场情绪指数
-
-### 盘中实时情绪代理（signals.py `_calc_market_sentiment`）
-
-2026-05-07 简化版，基于实时行情数据推算，不需要外部新闻源：
-
-| 维度 | 权重 | 数据来源 |
-|------|------|----------|
-| 涨跌幅 | 50% | 新浪实时行情 |
-| 量能比 | 50% | 量比粗估（无量比时用成交额推断） |
-
-综合评分映射：≥75 亢奋 / ≥60 偏多 / ≥40 中性 / ≥25 偏空 / <25 恐慌
-
-### 标签区间
-
-```
-extreme_fear  (0-25)  → 🔴 极度恐惧
-fear          (25-45) → 🟠 恐惧
-neutral       (45-55) → ⚪ 中性
-greed         (55-75) → 🟢 贪婪
-extreme_greed (75-100) → 💚 极度贪婪
+（阈值由 optimizer.py 每周五 80/20 时序分割自动调优，IC 不改善自动跳过）
 ```
 
 ---
 
-## 盘中实时监控 & 止损推送
+## 盘中实时监控 & 止损推送（独立进程，无需 Hermes）
 
-由 `monitor/monitor_daemon.py` 守护进程实现，交易日 9:15-15:05 运行：
+由 `monitor/monitor_daemon.py` 守护进程实现，**独立于 scheduler，开机自启后完全自主运行**：
 
+- **交易日自动启停**：系统 crontab `15 9 * * 1-5` 启动，`5 15 * * 1-5` 清理
 - 每 **30 秒**通过新浪轮询所有持仓标的最新价
-- 计算当日涨跌幅，与 `config.yaml` 中 `monitor.stop_loss_watch` 的成本价对比
-- 跌破 5% 止损线 → 输出微信推送格式消息 → 推送到用户微信
-- 跌破 4.5% 提醒线 → 输出预警消息
-- **每只标的每交易日仅触发一次**，避免刷屏
-- 超过 15:05 非交易时段自动退出轮询
-- 系统 crontab 自动启停：`15 9 * * 1-5` 启动，`5 15 * * 1-5` 清理
+- 跌破 5% 止损线 → 自动推送微信消息（每只标的每交易日仅触发一次）
+- 跌破 4.5% 提醒线 → 预警消息
+- 超过 15:05 非交易时段自动退出
+- **Hermes 不在线时照常推送**（监控进程独立，推送到微信不受影响）
 
-**当前持仓（2026-05-07确认）：**
+### 当前持仓
 
-| 代码 | 名称 | 成本价 | 配比 | 止损线(5%) |
-|------|------|--------|------|-----------|
-| 600900 | 长江电力 | 27.15 | 50% | 25.79 |
-| 159903 | 深成ETF南方 | 1.878 | 30% | 1.784 |
-| 002274 | 华昌化工 | 6.89 | 20% | 6.55 |
-
-盘中监控配置见 `config.yaml` 的 `monitor` 段。
+| 代码 | 名称 | 成本价 | 配比 | 止损线(5%) | 提醒线(4.5%) |
+|------|------|--------|------|-----------|-------------|
+| 600900 | 长江电力 | 27.15 | 50% | 25.79 | 25.93 |
+| 159903 | 深成ETF南方 | 1.878 | 30% | 1.784 | 1.793 |
+| 002274 | 华昌化工 | 6.89 | 20% | 6.55 | 6.58 |
 
 ---
 
-## 数据库表结构
-
-### market_data（行情）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| symbol | TEXT | 标的代码 |
-| date | TEXT | 交易日 (PRIMARY KEY) |
-| open/high/low/close | REAL | 价格 |
-| volume/amount | REAL | 成交量/额 |
-| pct_change | REAL | 涨跌幅% |
-
-### signals（信号）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| symbol | TEXT | 标的 |
-| signal_date | TEXT | 信号日期 |
-| direction | TEXT | buy/sell/hold |
-| confidence | INTEGER | 置信度 (0-100) |
-| suggested_position | REAL | 建议仓位 (0-1) |
-| stop_loss | REAL | 止损百分比 |
-| composite_score | REAL | 综合评分 |
-| actual_return | REAL | 实际收益（次日结算） |
-| is_correct | INTEGER | 方向判断是否正确 |
-| benchmark_return | REAL | 沪深300当日涨跌幅（性能基准） |
-
-### northbound_flow（北向资金）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| date | TEXT | 交易日 (PRIMARY KEY) |
-| net_flow | REAL | 当日净流入（亿元） |
-| buy_amount | REAL | 买入成交额 |
-| sell_amount | REAL | 卖出成交额 |
-| cumulative_flow | REAL | 历史累计净买额 |
-
-### margin_data（融资融券）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| date | TEXT | 交易日 (PRIMARY KEY) |
-| sh_margin_balance | REAL | 沪市融资余额 |
-| sz_margin_balance | REAL | 深市融资余额 |
-| total_margin | REAL | 两市融资余额合计 |
-| sh_margin_inflow | REAL | 沪市融资买入额 |
-| sz_margin_inflow | REAL | 深市融资买入额 |
-
-### sentiment_index（情绪指数）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| date | TEXT | 交易日 (PRIMARY KEY) |
-| value | REAL | 综合情绪 (0-100) |
-| label | TEXT | 标签 |
-| margin_score | REAL | 融资情绪得分 |
-| fund_flow_score | REAL | 主力资金得分 |
-| basis_score | REAL | 期货基差得分 |
-| breadth_score | REAL | 市场宽度得分 |
-| momentum_score | REAL | 动量得分 |
-
-### config_versions（配置版本）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| version | INTEGER | 版本号 |
-| config_json | TEXT | 完整配置快照 |
-| change_reason | TEXT | 变更原因 |
-
----
-
-## 参数调优（strategy/optimizer.py）
-
-每周五 22:00 自动执行（scheduler.py 配置）：
+## 参数调优（strategy/optimizer.py，每周五自动执行）
 
 1. 查询近期 signals 绩效（胜率/IC/平均收益/方向分布）
-2. 80/20 时序分割：前 80% 数据训练候选阈值，后 20% 验证
-3. 遍历候选参数组合：`buy_threshold ∈ {58,60,63,65,68,70}`，`sell_threshold = 100 - buy_threshold`
-4. **验证集 IC 未改善** → 跳过本次调优（不修改 config.yaml）
-5. 新参数优于旧参数 → 备份旧配置 → 写入新配置 → 记录 config_versions
-6. 新旧参数并行运行一周静默对比（logging 层面，不下发新信号）
-7. 支持 `--dry-run` 预览不写入
-
-### 调优原则
-- 胜率 < 45% → 优先收紧止损，降低仓位上限
-- 平均收益 < 0% → 调整 RSI 超买超卖阈值
-- 胜率 > 65% 且收益 > 0 → 适当放宽仓位上限
-- 单次参数变动 ≤ 当前值 20%（防止跳变）
+2. 80/20 时序分割遍历候选阈值
+3. **IC 未改善自动跳过**，绝不盲改参数
+4. 新参数优于旧参数 → 自动备份旧配置 → 写入新配置
+5. 新旧参数并行运行一周静默对比
+6. 支持 `--dry-run` 预览不写入
 
 ---
 
-## IC 监控（strategy/ic_monitor.py）
+## IC 监控（strategy/ic_monitor.py，自动告警）
 
-独立监控模块，每日计算信号 composite_score 与次日实际收益之间的 IC（RankIC）：
-
-- **RankIC**：信号评分与次日涨跌幅的斯皮尔曼秩相关系数
-- 连续 5 日 RankIC 为负 → 发出退化告警（日志 + 微信推送）
-- 阈值可配置（默认连续负值天数 ≥ 5）
+每日自动计算信号 composite_score 与次日实际收益之间的 RankIC：
+- 连续 5 日 RankIC 为负 → 自动发出退化告警（日志 + 微信推送）
+- 无需人工检查，系统自检自告警
 
 ---
 
 ## 快速开始
 
 ```bash
-# 安装依赖
-pip install akshare gradio pyyaml plotly pandas "httpx<0.28" apscheduler
+# 1. 安装依赖（一次性）
+pip install akshare pyyaml plotly pandas "httpx<0.28" apscheduler
 
-# 设置环境变量（如用到 DeepSeek，当前已不依赖）
-export DEEPSEEK_API_KEY=***
-
-# 拉取行情数据
-python data/fetcher.py --all
-
-# 生成信号
-python strategy/signals.py
-
-# 启动完整调度器（推荐）
+# 2. 启动无人值守模式（推荐）
 python scheduler.py
+# → 一切自动运行，无需后续操作
 
-# 启动独立盘中监控
-python monitor/monitor_daemon.py
+# 3. 或手动执行单项任务
+python data/fetcher.py --all          # 拉取行情
+python strategy/signals.py            # 生成信号
+python monitor/monitor_daemon.py      # 启动盘中监控（独立进程）
+python strategy/optimizer.py --dry-run  # 预览参数调优
+
+# 4. 设置开机自启（如需）
+# 添加 crontab:
+# 15 9 * * 1-5 cd /opt/quant-trader && python monitor/monitor_daemon.py
 ```
 
 ---
 
+## 项目文件结构
+
+```
+/opt/quant-trader/
+├── config.yaml              ← 策略配置（仓位/止损/阈值等，版本化管理）
+├── PROJECT_OVERVIEW.md      ← 本文件
+├── scheduler.py             ← 主调度器（APScheduler，推荐入口）
+├── data/
+│   ├── fetcher.py           ← 行情拉取（新浪+腾讯）
+│   └── realtime.py          ← 实时数据代理 + 合理性验证
+├── strategy/
+│   ├── signals.py           ← 技术因子计算 + 信号生成（核心逻辑）
+│   ├── optimizer.py         ← 每周五参数调优
+│   ├── ic_monitor.py        ← IC 退化监控
+│   └── intraday_monitor.py  ← 盘内信号辅助
+├── monitor/
+│   └── monitor_daemon.py    ← 盘中监控守护进程（独立，推微信）
+├── db/
+│   └── quant.db             ← SQLite 数据库（自动创建）
+├── logs/                    ← 运行日志
+└── config_backups/          ← 配置版本备份
+```
+
+---
+
+*本项目设计目标：开机即用，无人值守，Hermes 在与不在一样运转。*
 *最后更新: 2026-05-10*
